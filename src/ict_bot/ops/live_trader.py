@@ -87,6 +87,21 @@ class LiveTrader:
         if self._max_frame_bars and self._frame is not None and len(self._frame) > self._max_frame_bars:
             self._frame = self._frame.iloc[-self._max_frame_bars:]
 
+    def _interruptible_sleep(self, seconds: float, sleep_fn) -> None:
+        """Sleep in ~1s slices so a stop requested mid-sleep is honored promptly.
+
+        One long sleep would swallow the Ctrl-C our signal handler turns into
+        :meth:`request_stop` — the handler may run without interrupting the OS
+        sleep, so the loop wouldn't notice until the (up to 15-min) sleep ended
+        and NSSM would force-kill instead. Slicing lets the loop observe the flag
+        within a second and exit cleanly (logging the stop, leaving the position
+        and its broker stop alone).
+        """
+        remaining = seconds
+        while remaining > 0 and not self._stopped:
+            sleep_fn(min(1.0, remaining))
+            remaining -= 1.0
+
     # --- one decision + execution step -----------------------------------
     def handle_bar(self, frame: pd.DataFrame):
         """Decide and act on the latest bar of ``frame``; return the action."""
@@ -211,7 +226,7 @@ class LiveTrader:
             iterations += 1
             now = now_fn()
             target = next_boundary(now, 15, self._poll_buffer_s)
-            sleep_fn(max((target - now).total_seconds(), 0))
+            self._interruptible_sleep(max((target - now).total_seconds(), 0), sleep_fn)
             if self._stopped:
                 break
             try:

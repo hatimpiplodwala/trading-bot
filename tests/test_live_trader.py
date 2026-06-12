@@ -134,6 +134,22 @@ def test_request_stop_exits_run_loop_cleanly():
     assert "stop" in events and "error" not in events
 
 
+def test_interruptible_sleep_returns_early_when_stopped():
+    # A stop requested mid-sleep (as the signal handler does) must be observed
+    # within a slice or two, not swallowed by the full duration.
+    broker, state, session = DryRunBroker(100_000.0, True), StateStore(":memory:"), _session()
+    trader = LiveTrader("SPY", None, broker, state, LogNotifier(), session)
+    calls = {"n": 0}
+
+    def fake_sleep(_seconds):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            trader.request_stop()
+
+    trader._interruptible_sleep(100.0, fake_sleep)
+    assert calls["n"] <= 3
+
+
 def test_run_honors_max_iterations_when_market_closed():
     feed = _FakeFeed(_frame(_day(_DAY)))
     notifier = _Rec()
