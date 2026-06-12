@@ -1,0 +1,67 @@
+# ICT bot configuration. Secrets live in .env, NOT here.
+# All times are ET (America/New_York). DST is handled in code (Gotcha #4) by
+# resolving these wall-clock ET windows against the current offset — never
+# hardcode a fixed UTC/GST offset.
+
+symbol: SPY
+
+# SMT divergence reference symbols (input only — never traded in v1, Gotcha #8).
+smt_reference_symbols: [QQQ, IWM]
+
+# Timeframes maintained in the store. Entry TF is the base stream; the rest gate.
+timeframes: [5m, 15m, 1h, 4h, 1d]
+entry_timeframe: 5m
+htf_bias_timeframes: [1h, 1d]
+
+data:
+  feed: iex            # free Alpaca tier (Gotcha #5 — validate before trusting)
+  history_years: 2
+
+risk:
+  risk_per_trade: 0.005      # 0.5% of equity per trade
+  daily_loss_limit: 0.02     # halt new entries at -2% realized P&L per ET day
+  max_concurrent_positions: 1
+  atr_length: 14
+  atr_stop_mult: 1.5         # stop = entry +/- max(1.5*ATR14, structural level)
+  integer_shares_only: true  # Alpaca rejects bracket orders on fractional shares (Gotcha #9)
+
+signal:
+  min_confluence_score: 60
+  # Confluence weights — a starting hypothesis, validated out-of-sample (Gotcha #6).
+  weights:
+    htf_aligned: 25
+    silver_bullet: 20
+    ny_kill_zone: 10
+    discount_premium: 15
+    ote: 10
+    fvg_ob_overlap: 15
+    smt_divergence: 10
+    liquidity_sweep: 15
+
+# NY-centric kill zones in ET wall-clock (HH:MM, 24h).
+kill_zones:
+  ny_premarket:   { start: "07:00", end: "09:30", tradeable: false }  # observe-only (Gotcha #9)
+  ny_am:          { start: "09:30", end: "12:00", tradeable: true }
+  silver_bullet:  { start: "10:00", end: "11:00", tradeable: true }   # highest priority
+  ny_pm:          { start: "13:30", end: "16:00", tradeable: true }
+
+regular_hours: { start: "09:30", end: "16:00" }
+opening_range: { start: "09:30", end: "10:00" }
+
+timezone:
+  market: America/New_York   # ET, DST-aware
+  display: Asia/Dubai        # GST (UTC+4) for human-facing display; logs stay UTC
+
+backtest:
+  train_months: 18           # in-sample tuning window
+  oos_months: 6              # untouched out-of-sample window (the verdict)
+  slippage_cents: 1          # paper fills are optimistic (Gotcha #7)
+
+llm:
+  model: qwen3:4b
+  role: journal              # v1 = post-trade journal only; veto deferred to v2 (Gotcha #3)
+  timeout_seconds: 30
+
+alerts:
+  heartbeat_hours: 1
+  daily_summary_et: "16:05"

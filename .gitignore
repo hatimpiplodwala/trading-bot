@@ -1,0 +1,35 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Secrets & local config
+.env
+.env.*
+!.env.example
+
+# Data & state (never commit market data, journals, or trade state)
+data/
+logs/
+*.db
+*.sqlite
+*.sqlite3
+*.duckdb
+*.parquet
+
+# Backtest output
+src/ict_bot/backtest/results/
+backtest/results/
+
+# Tooling / IDE
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.idea/
+.vscode/
