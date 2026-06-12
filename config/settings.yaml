@@ -75,6 +75,15 @@ orb:
   stop_atr_floor_mult: 0.5   # stop at the opposite OR side, but never < 0.5*ATR from entry
   target_rr: null            # optional R-multiple target; null = exit only at the close
 
+# Live paper loop (Phase 7). Trades the ORB signal on `symbol` above (SPY — the
+# robust vehicle in the 4.5yr hardening; QQQ just-missed the gate).
+broker:
+  paper: true                # Alpaca paper account (never live capital in v1)
+  state_db: data/state.db    # SQLite signal/trade log (gitignored data/ dir)
+live:
+  poll_buffer_seconds: 20    # wait after each 15m boundary for the bar to finalize
+  seed_days: 4               # history pulled at startup to seed ATR + opening range
+
 timezone:
   market: America/New_York   # ET, DST-aware
   display: Asia/Dubai        # GST (UTC+4) for human-facing display; logs stay UTC

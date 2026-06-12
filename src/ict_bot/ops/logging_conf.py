@@ -50,6 +50,9 @@ def configure_logging(level: int | str = logging.INFO) -> None:
     root.handlers.clear()
     root.addHandler(handler)
     root.setLevel(level)
+    # pandas_ta_classic warns on short windows (< ATR length); compute_atr already
+    # falls back to a manual Wilder ATR, so silence the expected noise.
+    logging.getLogger("pandas_ta_classic").setLevel(logging.ERROR)
 
 
 def utcnow() -> _dt.datetime:
