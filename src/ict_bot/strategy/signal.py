@@ -31,6 +31,7 @@ from ict_bot.strategy.confluence import (
     meets_threshold,
     score_confluences,
 )
+from ict_bot.strategy.exits import liquidity_target, structural_stop_level
 from ict_bot.strategy.risk import (
     DailyLossLimit,
     compute_atr,
@@ -58,6 +59,7 @@ class SetupContext:
     atr: float
     structural_level: float | None
     confluences: Confluences
+    target: float | None = None  # nearest opposing liquidity pool (None if none in range)
 
 
 @dataclass(frozen=True)
@@ -83,16 +85,18 @@ class SignalEngine:
         weights: dict[str, int],
         min_score: int,
         risk_pct: float = 0.005,
-        atr_mult: float = 1.5,
-        rr: float = 2.0,
+        atr_floor_mult: float = 0.5,
+        min_target_rr: float = 1.0,
+        fallback_rr: float | None = None,
         max_notional_pct: float = 1.0,
         daily_gate: DailyLossLimit | None = None,
     ) -> None:
         self.weights = weights
         self.min_score = min_score
         self.risk_pct = risk_pct
-        self.atr_mult = atr_mult
-        self.rr = rr
+        self.atr_floor_mult = atr_floor_mult
+        self.min_target_rr = min_target_rr
+        self.fallback_rr = fallback_rr
         self.max_notional_pct = max_notional_pct
         # A default un-started gate allows entries (starting_equity 0 -> never breached).
         self.daily_gate = daily_gate if daily_gate is not None else DailyLossLimit(limit_pct=1.0)
@@ -101,11 +105,14 @@ class SignalEngine:
     def from_settings(cls, settings: dict, daily_gate: DailyLossLimit | None = None) -> "SignalEngine":
         signal = settings["signal"]
         risk = settings["risk"]
+        exits = settings["exits"]
         return cls(
             weights=signal["weights"],
             min_score=signal["min_confluence_score"],
             risk_pct=risk["risk_per_trade"],
-            atr_mult=risk["atr_stop_mult"],
+            atr_floor_mult=risk["atr_floor_mult"],
+            min_target_rr=exits["min_target_rr"],
+            fallback_rr=exits["fallback_rr"],
             daily_gate=daily_gate,
         )
 
@@ -122,15 +129,28 @@ class SignalEngine:
             return None
 
         stop = stop_loss(
-            ctx.entry, ctx.direction, ctx.atr, ctx.structural_level, self.atr_mult
+            ctx.entry, ctx.direction, ctx.atr, ctx.structural_level, self.atr_floor_mult
         )
+        risk_dist = abs(ctx.entry - stop)
+        if risk_dist <= 0:
+            return None
+
+        # Prefer the liquidity target; only accept it if it is at least
+        # ``min_target_rr`` away, else fall back to a fixed R or skip the trade.
+        target = ctx.target
+        if target is not None and abs(target - ctx.entry) / risk_dist < self.min_target_rr:
+            target = None
+        if target is None:
+            if self.fallback_rr is None:
+                return None
+            target = take_profit(ctx.entry, stop, ctx.direction, self.fallback_rr)
+
         qty = position_size(
             equity, ctx.entry, stop, self.risk_pct, self.max_notional_pct
         )
         if qty <= 0:
             return None
 
-        target = take_profit(ctx.entry, stop, ctx.direction, self.rr)
         return CandidateSignal(
             timestamp=ctx.timestamp,
             direction=ctx.direction,
@@ -208,6 +228,8 @@ def build_setup_context(
     entry_lookback: int = 300,
     h1_lookback: int = 1500,
     daily_lookback: int = 250,
+    target_lookback: int = 40,
+    target_swing_length: int = 5,
 ) -> SetupContext | None:
     """Assemble a :class:`SetupContext` for the current bar from the detectors.
 
@@ -287,7 +309,23 @@ def build_setup_context(
         liquidity_sweep=liquidity_sweep,
     )
 
-    structural_level = dr.low if direction == "long" else dr.high
+    # Structural stop at the nearest swing that invalidates the setup; fall back
+    # to the dealing-range extreme if no qualifying swing is found.
+    structural_level = structural_stop_level(
+        entry_window, direction, entry, swing_length=swing_length
+    )
+    if structural_level is None:
+        structural_level = dr.low if direction == "long" else dr.high
+
+    # Target the nearest opposing liquidity pool beyond entry (may be None).
+    target = liquidity_target(
+        entry_window,
+        direction,
+        entry,
+        swing_length=target_swing_length,
+        lookback=target_lookback,
+    )
+
     atr = compute_atr(entry_window)
 
     return SetupContext(
@@ -297,6 +335,7 @@ def build_setup_context(
         atr=atr,
         structural_level=structural_level,
         confluences=confluences,
+        target=target,
     )
 
 

@@ -39,17 +39,29 @@ WEIGHTS = {
 TS = pd.Timestamp("2024-03-01 15:00", tz="UTC")
 
 
-def _engine(daily_gate=None) -> SignalEngine:
-    return SignalEngine(weights=WEIGHTS, min_score=60, risk_pct=0.005, daily_gate=daily_gate)
+def _engine(daily_gate=None, min_target_rr=1.0, fallback_rr=None) -> SignalEngine:
+    return SignalEngine(
+        weights=WEIGHTS,
+        min_score=60,
+        risk_pct=0.005,
+        atr_floor_mult=0.5,
+        min_target_rr=min_target_rr,
+        fallback_rr=fallback_rr,
+        daily_gate=daily_gate,
+    )
 
 
-def _ctx(confluences: Confluences, direction: str = "long") -> SetupContext:
+def _ctx(
+    confluences: Confluences, direction: str = "long", target: float | None = 106.0
+) -> SetupContext:
+    # entry 100, structural 95 -> stop 95 (5-pt risk); target 106 -> 1.2R.
     return SetupContext(
         timestamp=TS,
         direction=direction,
         entry=100.0,
         atr=2.0,
         structural_level=95.0,
+        target=target,
         confluences=confluences,
     )
 
@@ -60,16 +72,31 @@ STRONG = Confluences(htf_aligned=True, silver_bullet=True, ny_kill_zone=True, fv
 WEAK = Confluences(htf_aligned=True, ny_kill_zone=True)
 
 
-def test_emits_candidate_when_score_and_size_ok():
+def test_emits_candidate_using_liquidity_target():
     sig = _engine().evaluate(_ctx(STRONG), equity=100_000)
     assert isinstance(sig, CandidateSignal)
     assert sig.direction == "long"
     assert sig.score == 70
     assert sig.entry == 100.0
-    assert sig.stop == 95.0          # max(1.5*ATR=3, structural 5) -> 5 below
-    assert sig.target == 110.0       # 2R of 5-pt risk
+    assert sig.stop == 95.0          # structural 5 below beats 0.5*ATR floor (1)
+    assert sig.target == 106.0       # the liquidity target carried in the context
     assert sig.qty == 100            # floor(500 / 5)
     assert sig.timestamp == TS
+
+
+def test_skips_when_liquidity_target_too_close():
+    # target 102 -> 0.4R < min_target_rr (1.0), no fallback -> no trade.
+    assert _engine().evaluate(_ctx(STRONG, target=102.0), equity=100_000) is None
+
+
+def test_uses_fallback_rr_when_no_liquidity_target():
+    sig = _engine(fallback_rr=2.0).evaluate(_ctx(STRONG, target=None), equity=100_000)
+    assert sig is not None
+    assert sig.target == 110.0       # 2R of the 5-pt risk via fallback
+
+
+def test_skips_when_no_target_and_no_fallback():
+    assert _engine().evaluate(_ctx(STRONG, target=None), equity=100_000) is None
 
 
 def test_suppresses_below_threshold():

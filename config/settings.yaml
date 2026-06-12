@@ -9,8 +9,10 @@ symbol: SPY
 smt_reference_symbols: [QQQ, IWM]
 
 # Timeframes maintained in the store. Entry TF is the base stream; the rest gate.
+# Entry moved 5m -> 15m in the structural rework: 5m noise was chopping intraday
+# trades out before the move developed (knife-edge breakeven win rate).
 timeframes: [5m, 15m, 1h, 4h, 1d]
-entry_timeframe: 5m
+entry_timeframe: 15m
 htf_bias_timeframes: [1h, 1d]
 
 data:
@@ -22,17 +24,28 @@ risk:
   daily_loss_limit: 0.02     # halt new entries at -2% realized P&L per ET day
   max_concurrent_positions: 1
   atr_length: 14
-  atr_stop_mult: 1.5         # stop = entry +/- max(1.5*ATR14, structural level)
+  atr_floor_mult: 0.5        # stop = nearest structural swing, but never tighter than 0.5*ATR
   integer_shares_only: true  # Alpaca rejects bracket orders on fractional shares (Gotcha #9)
+
+# Trade management (structural rework, Approach A): structural stops + liquidity
+# targets, flat by the close. Replaces the old fixed 2R target + indefinite hold.
+exits:
+  min_target_rr: 1.0            # skip the trade if nearest liquidity target is < 1R from the stop
+  fallback_rr: null             # if no valid liquidity target: null = skip (no fixed-R fallback)
+  target_search_lookback: 40    # bars searched for the opposing liquidity pool
+  no_entry_after: "15:30"       # ET — too late to develop intraday; observe only
+  flatten_time: "15:45"         # ET — force-close any open position on/after this bar
 
 signal:
   # Tuned on in-sample only; never against OOS (Gotcha #6).
-  # Cycle 1: 60 -> 70 improved IS PF 1.02 -> 1.13 (scores 60-69 were net-negative).
-  # Cycle 2: 70 -> 75 *regressed* to PF 1.01 and exposed a non-monotonic edge
-  #   (80-84 PF 2.53 but 90+ PF 0.68 — over-stacked confluences = late entries).
-  #   Reverted. A score *band* would fit in-sample noise (overfitting), so we keep
-  #   the simple floor. 70 is the tuned config; OOS is the verdict.
-  min_confluence_score: 70
+  # Old 5m design: 60->70 lifted IS PF 1.02->1.13; OOS still failed (0.83).
+  # New design (15m + structural stops + liquidity targets, flat by close):
+  #   at 80, IS PF 1.70 BUT avgR~0 and the edge sat in 14 trades (90-94 bucket) —
+  #   a fat-tail/overfit signature. OOS confirmed it: PF 0.18, avgR -0.66.
+  # CONCLUSION: neither parameter tuning nor the structural rework produced a
+  #   generalizable edge. This config is NOT validated for live capital; the value
+  #   delivered is the honest negative result + the reusable harness/management.
+  min_confluence_score: 80
   # Confluence weights — a starting hypothesis, validated out-of-sample (Gotcha #6).
   weights:
     htf_aligned: 25

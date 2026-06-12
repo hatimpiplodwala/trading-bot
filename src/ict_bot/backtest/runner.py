@@ -30,6 +30,12 @@ from ict_bot.strategy.signal import (
 _ET = "America/New_York"
 
 
+def _hhmm_to_minutes(hhmm: str) -> int:
+    """\"HH:MM\" -> minutes since midnight."""
+    hh, mm = hhmm.split(":")
+    return int(hh) * 60 + int(mm)
+
+
 class ICTStrategy(Strategy):
     """ICT signal/risk engine driven bar-by-bar by backtesting.py.
 
@@ -49,6 +55,9 @@ class ICTStrategy(Strategy):
     def init(self) -> None:
         gate = DailyLossLimit(limit_pct=self.settings["risk"]["daily_loss_limit"])
         self.engine = SignalEngine.from_settings(self.settings, daily_gate=gate)
+        exits = self.settings["exits"]
+        self._flatten_min = _hhmm_to_minutes(exits["flatten_time"])
+        self._no_entry_min = _hhmm_to_minutes(exits["no_entry_after"])
         self._seen_closed = 0
         self._cur_day = None
         self._dir_cache_key = None
@@ -57,17 +66,30 @@ class ICTStrategy(Strategy):
     def next(self) -> None:
         i = len(self.data)  # number of visible bars == current position + 1
         ts = self.entry_canonical.index[i - 1]
+        et = ts.tz_convert(_ET)
+        et_min = et.hour * 60 + et.minute
 
         # Daily loss-limit bookkeeping (reset per ET day, register realized P&L).
-        et_day = ts.tz_convert(_ET).date()
-        if et_day != self._cur_day:
-            self._cur_day = et_day
+        if et.date() != self._cur_day:
+            self._cur_day = et.date()
             self.engine.daily_gate.start_day(self.equity)
         for trade in self.closed_trades[self._seen_closed:]:
             self.engine.daily_gate.register(trade.pl)
         self._seen_closed = len(self.closed_trades)
 
         if self.position:  # max one concurrent position (v1)
+            # Flat by the close: force-exit at/after the flatten bar, or on the
+            # session's last bar (covers half-days and the dataset end). With
+            # trade_on_close the exit settles same-session — nothing overnight.
+            last_of_session = (
+                i >= len(self.entry_canonical)
+                or self.entry_canonical.index[i].tz_convert(_ET).date() != et.date()
+            )
+            if et_min >= self._flatten_min or last_of_session:
+                self.position.close()
+            return
+
+        if et_min >= self._no_entry_min:  # too late to develop intraday
             return
 
         daily_slice = self.daily.loc[:ts]
@@ -166,5 +188,9 @@ def run_backtest(
         spread=spread,
         exclusive_orders=False,
         finalize_trades=True,
+        # Fill on the signal bar's close (not next open): makes the intraday
+        # flat-by-close exit settle same-session. Decisions still use only data
+        # up to that close, so no lookahead is introduced.
+        trade_on_close=True,
     )
     return bt.run()

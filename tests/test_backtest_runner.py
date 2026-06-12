@@ -93,3 +93,36 @@ def test_run_backtest_smoke(store):
     metrics = extract_metrics(stats)
     assert metrics["num_trades"] >= 0
     assert "profit_factor" in metrics
+
+
+def test_trades_are_intraday_and_flat_by_close(store):
+    spy15 = store.read_bars("SPY", "15m")
+    qqq15 = store.read_bars("QQQ", "15m")
+    iwm15 = store.read_bars("IWM", "15m")
+    daily = store.read_bars("SPY", "1d")
+    h1 = store.read_bars("SPY", "1h")
+    if min(len(spy15), len(qqq15), len(iwm15)) < 1000 or len(daily) < 60 or len(h1) < 500:
+        pytest.skip("insufficient local data")
+
+    start = spy15.index[-1] - pd.Timedelta(days=40)
+    segment = spy15[spy15.index >= start]
+    settings = load_settings()
+    stats = run_backtest(
+        entry_segment=segment, daily=daily, h1=h1,
+        references={"QQQ": qqq15, "IWM": iwm15}, settings=settings, cash=100_000.0,
+    )
+    trades = stats._trades
+    if len(trades) == 0:
+        pytest.skip("no trades generated in window")
+
+    et = "America/New_York"
+    entry_et = trades["EntryTime"].dt.tz_convert(et)
+    exit_et = trades["ExitTime"].dt.tz_convert(et)
+    no_entry_after = settings["exits"]["no_entry_after"]
+    hh, mm = (int(x) for x in no_entry_after.split(":"))
+
+    # No overnight holds: every trade enters and exits in the same ET session.
+    assert (entry_et.dt.date == exit_et.dt.date).all()
+    # Entries respect the no-late-entry gate; exits are within RTH.
+    assert ((entry_et.dt.hour * 60 + entry_et.dt.minute) < hh * 60 + mm).all()
+    assert ((exit_et.dt.hour * 60 + exit_et.dt.minute) <= 16 * 60).all()
