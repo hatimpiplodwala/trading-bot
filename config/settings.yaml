@@ -67,6 +67,14 @@ kill_zones:
 regular_hours: { start: "09:30", end: "16:00" }
 opening_range: { start: "09:30", end: "10:00" }
 
+# Opening Range Breakout (momentum strategy, both directions). The opening range
+# is opening_range.start..opening_range.end; the first 15m bar to close beyond it
+# triggers a breakout entry (one/day), stopped at the opposite side of the range
+# and flat by exits.flatten_time. A separate signal path from the ICT engine.
+orb:
+  stop_atr_floor_mult: 0.5   # stop at the opposite OR side, but never < 0.5*ATR from entry
+  target_rr: null            # optional R-multiple target; null = exit only at the close
+
 timezone:
   market: America/New_York   # ET, DST-aware
   display: Asia/Dubai        # GST (UTC+4) for human-facing display; logs stay UTC
