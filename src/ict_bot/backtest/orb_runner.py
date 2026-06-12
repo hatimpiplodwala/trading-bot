@@ -21,10 +21,23 @@ _ET = "America/New_York"
 
 
 class ORBStrategy(Strategy):
-    """Opening Range Breakout, both directions, one trade per day, flat by close."""
+    """Opening Range Breakout, both directions, one trade per day, flat by close.
+
+    ``fill_mode`` controls execution realism:
+
+    - ``"close"`` (default): entries and the flatten fill at the *signal bar's
+      close* (``trade_on_close=True``). Optimistic — assumes you transact at the
+      price you only know once the bar has closed.
+    - ``"next_open"``: entries and the flatten fill at the *next bar's open*
+      (``trade_on_close=False``). The pessimistic, realistic model — confirm the
+      close beyond the range, then act on the following bar. To keep the
+      flat-by-close invariant the flatten is brought forward one bar so its
+      next-open fill still lands inside the same session.
+    """
 
     entry_canonical: pd.DataFrame = None
     settings: dict = None
+    fill_mode: str = "close"
 
     def init(self) -> None:
         s = self.settings
@@ -41,10 +54,29 @@ class ORBStrategy(Strategy):
         self._or_high = None
         self._or_low = None
         self._traded = False
+        # Per-bar flag: is this the last bar of its ET session? Used to keep the
+        # next-open flatten inside the session (close one bar early so the fill,
+        # at the following bar's open, is still same-day). Robust to half-days.
+        et_dates = self.entry_canonical.index.tz_convert(_ET).date
+        n = len(et_dates)
+        self._last_of_session = [
+            k == n - 1 or et_dates[k + 1] != et_dates[k] for k in range(n)
+        ]
+
+    def _should_flatten(self, c: int, et_min: int) -> bool:
+        """Whether to close the open position on the current bar ``c``."""
+        n = len(self.entry_canonical)
+        if self.fill_mode == "next_open":
+            # Close now so the next-open fill lands on (at latest) the session's
+            # last bar — never the next session's open.
+            return c + 1 >= n or self._last_of_session[c + 1]
+        last_of_session = c + 1 >= n or self._last_of_session[c]
+        return et_min >= self._flatten_min or last_of_session
 
     def next(self) -> None:
         i = len(self.data)
-        ts = self.entry_canonical.index[i - 1]
+        c = i - 1
+        ts = self.entry_canonical.index[c]
         et = ts.tz_convert(_ET)
         et_min = et.hour * 60 + et.minute
 
@@ -68,11 +100,7 @@ class ORBStrategy(Strategy):
 
         # Flat by close (or the session's last bar — half-days, dataset end).
         if self.position:
-            last_of_session = (
-                i >= len(self.entry_canonical)
-                or self.entry_canonical.index[i].tz_convert(_ET).date() != et.date()
-            )
-            if et_min >= self._flatten_min or last_of_session:
+            if self._should_flatten(c, et_min):
                 self.position.close()
             return
 
@@ -99,20 +127,33 @@ class ORBStrategy(Strategy):
             self.sell(size=qty, sl=stop, tp=target)
 
 
-def _configured_strategy(entry_canonical: pd.DataFrame, settings: dict) -> type[ORBStrategy]:
+def _configured_strategy(
+    entry_canonical: pd.DataFrame, settings: dict, fill_mode: str
+) -> type[ORBStrategy]:
     class _Configured(ORBStrategy):
         pass
 
     _Configured.entry_canonical = entry_canonical
     _Configured.settings = settings
+    _Configured.fill_mode = fill_mode
     return _Configured
 
 
 def run_orb_backtest(
-    entry_segment: pd.DataFrame, settings: dict, cash: float = 100_000.0
+    entry_segment: pd.DataFrame,
+    settings: dict,
+    cash: float = 100_000.0,
+    fill_mode: str = "close",
 ) -> pd.Series:
-    """Run ORB over one entry-timeframe segment; return backtesting stats."""
-    strategy = _configured_strategy(entry_segment, settings)
+    """Run ORB over one entry-timeframe segment; return backtesting stats.
+
+    ``fill_mode`` is ``"close"`` (fill at the signal bar's close — optimistic) or
+    ``"next_open"`` (fill at the next bar's open — realistic). See
+    :class:`ORBStrategy`.
+    """
+    if fill_mode not in ("close", "next_open"):
+        raise ValueError(f"fill_mode must be 'close' or 'next_open', got {fill_mode!r}")
+    strategy = _configured_strategy(entry_segment, settings, fill_mode)
     mean_price = float(entry_segment["close"].mean())
     spread = (settings["backtest"]["slippage_cents"] / 100.0) / mean_price
     bt = Backtest(
@@ -122,6 +163,6 @@ def run_orb_backtest(
         spread=spread,
         exclusive_orders=False,
         finalize_trades=True,
-        trade_on_close=True,
+        trade_on_close=(fill_mode == "close"),
     )
     return bt.run()
