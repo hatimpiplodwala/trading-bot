@@ -1,9 +1,145 @@
 """Backtest harness (Phase 5).
 
 Wraps the live signal + risk engine in a ``backtesting.py`` Strategy, fed
-bar-by-bar. The SAME code paths as live (no separate logic). Enforces a
-train/test split: tune on the earlier ~18 months, judge on an untouched ~6-month
-out-of-sample window. Adds a 1-cent slippage assumption (Gotcha #7).
+bar-by-bar. The SAME code paths as live (no separate logic): each bar slices the
+HTF/reference frames to the current timestamp and calls the very same
+``build_setup_context`` + ``SignalEngine.evaluate`` the live loop uses. Enforces a
+train/test split (see :mod:`ict_bot.backtest.split`): tune on the earlier ~18
+months, judge on an untouched ~6-month out-of-sample window. A 1-cent/share
+slippage assumption is modelled as a bid-ask spread (Gotcha #7).
+
+``backtesting.py`` feeds a single series, so SPY entry-timeframe bars are the
+primary data; Daily, 1H, and the QQQ/IWM references travel as configured class
+attributes and are sliced to ``<= ts`` each bar — never beyond (no lookahead).
 """
 
 from __future__ import annotations
+
+import pandas as pd
+from backtesting import Backtest, Strategy
+
+from ict_bot.backtest.metrics import to_backtesting_frame
+from ict_bot.ict.sessions import Sessions
+from ict_bot.strategy.risk import DailyLossLimit
+from ict_bot.strategy.signal import SignalEngine, build_setup_context
+
+_ET = "America/New_York"
+
+
+class ICTStrategy(Strategy):
+    """ICT signal/risk engine driven bar-by-bar by backtesting.py.
+
+    Configuration is injected as class attributes by :func:`run_backtest` (the
+    frames can't ride through ``bt.run(**params)``, which is for optimizable
+    scalars only).
+    """
+
+    entry_canonical: pd.DataFrame = None  # SPY entry-TF bars (canonical, lowercase)
+    daily: pd.DataFrame = None
+    h1: pd.DataFrame = None
+    references: dict[str, pd.DataFrame] = None
+    sessions: Sessions = None
+    settings: dict = None
+    swing_length: int = 20
+
+    def init(self) -> None:
+        gate = DailyLossLimit(limit_pct=self.settings["risk"]["daily_loss_limit"])
+        self.engine = SignalEngine.from_settings(self.settings, daily_gate=gate)
+        self._seen_closed = 0
+        self._cur_day = None
+
+    def next(self) -> None:
+        i = len(self.data)  # number of visible bars == current position + 1
+        ts = self.entry_canonical.index[i - 1]
+
+        # Daily loss-limit bookkeeping (reset per ET day, register realized P&L).
+        et_day = ts.tz_convert(_ET).date()
+        if et_day != self._cur_day:
+            self._cur_day = et_day
+            self.engine.daily_gate.start_day(self.equity)
+        for trade in self.closed_trades[self._seen_closed:]:
+            self.engine.daily_gate.register(trade.pl)
+        self._seen_closed = len(self.closed_trades)
+
+        if self.position:  # max one concurrent position (v1)
+            return
+
+        ctx = build_setup_context(
+            timestamp=ts,
+            entry_tf=self.entry_canonical.iloc[:i],
+            daily=self.daily.loc[:ts],
+            h1=self.h1.loc[:ts],
+            references={k: v.loc[:ts] for k, v in self.references.items()},
+            sessions=self.sessions,
+            swing_length=self.swing_length,
+        )
+        if ctx is None:
+            return
+        signal = self.engine.evaluate(ctx, equity=self.equity)
+        if signal is None:
+            return
+
+        if signal.direction == "long":
+            self.buy(size=signal.qty, sl=signal.stop, tp=signal.target)
+        else:
+            self.sell(size=signal.qty, sl=signal.stop, tp=signal.target)
+
+
+def _configured_strategy(
+    entry_canonical: pd.DataFrame,
+    daily: pd.DataFrame,
+    h1: pd.DataFrame,
+    references: dict[str, pd.DataFrame],
+    sessions: Sessions,
+    settings: dict,
+    swing_length: int,
+) -> type[ICTStrategy]:
+    class _Configured(ICTStrategy):
+        pass
+
+    _Configured.entry_canonical = entry_canonical
+    _Configured.daily = daily
+    _Configured.h1 = h1
+    _Configured.references = references
+    _Configured.sessions = sessions
+    _Configured.settings = settings
+    _Configured.swing_length = swing_length
+    return _Configured
+
+
+def run_backtest(
+    entry_segment: pd.DataFrame,
+    daily: pd.DataFrame,
+    h1: pd.DataFrame,
+    references: dict[str, pd.DataFrame],
+    settings: dict,
+    cash: float = 100_000.0,
+    swing_length: int = 20,
+) -> pd.Series:
+    """Run the ICT strategy over one entry-TF segment; return backtesting stats.
+
+    ``entry_segment`` is the canonical SPY entry-TF frame for the window (the
+    detectors warm up within its head). Slippage of ``slippage_cents`` per share
+    is modelled as a spread fraction off the segment's mean price.
+    """
+    bt_frame = to_backtesting_frame(entry_segment)
+    strategy = _configured_strategy(
+        entry_segment,
+        daily,
+        h1,
+        references,
+        sessions=Sessions.from_settings(settings),
+        settings=settings,
+        swing_length=swing_length,
+    )
+    mean_price = float(entry_segment["close"].mean())
+    spread = (settings["backtest"]["slippage_cents"] / 100.0) / mean_price
+    bt = Backtest(
+        bt_frame,
+        strategy,
+        cash=cash,
+        spread=spread,
+        exclusive_orders=False,
+        finalize_trades=True,
+    )
+    return bt.run()

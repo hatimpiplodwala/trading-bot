@@ -99,3 +99,28 @@ path shared by the live loop and the backtest:
 Per-confluence detection is deliberately a modest v1 heuristic; its ICT fidelity is the
 job of the Phase 5 out-of-sample backtest, not unit assertions. A month-long replay of
 real SPY 15m bars confirms the engine is selective rather than firing on every bar.
+
+## Phase 5 — Backtest harness
+
+`src/ict_bot/backtest/` runs the **same** signal/risk code through
+[`backtesting.py`](https://kernc.github.io/backtesting.py/) — no separate backtest logic:
+
+- `runner.py` — `ICTStrategy` drives the engine bar-by-bar. SPY entry-TF bars are the
+  primary series; Daily/1H and the QQQ/IWM references travel as config and are sliced to
+  `<= ts` each bar (no lookahead, enforced by a test). One position at a time; the daily
+  −2% loss limit is fed from realized trade P&L. Slippage of `slippage_cents`/share is
+  modelled as a spread.
+- `split.py` — `train_oos_split` reserves the most recent `oos_months` **untouched** as
+  the out-of-sample verdict set (Gotcha #6); the rest is in-sample tuning.
+- `metrics.py` — maps backtesting stats to our metric set (incl. avg R-multiple and
+  trades/month) and renders an in-sample vs. OOS report. **OOS gate: PF > 1.2 and max
+  drawdown < 15%** — in-sample alone proves nothing.
+
+```bash
+# Runs in-sample + OOS, writes backtest/results/YYYY-MM-DD.md (gitignored artifact)
+uv run python scripts/run_backtest.py
+```
+
+Tuning rule: iterate weights/ATR multiples against in-sample only; the OOS run is the
+verdict, not the tuning target. If OOS fails after ≤3 in-sample cycles, the strategy
+needs structural rework — not more parameter tweaks.
