@@ -171,6 +171,25 @@ def ranges_overlap(a: tuple[float, float], b: tuple[float, float]) -> bool:
     return a[0] <= b[1] and b[0] <= a[1]
 
 
+def resolve_direction(
+    daily: pd.DataFrame,
+    h1: pd.DataFrame,
+    swing_length: int = 20,
+    daily_lookback: int = 250,
+    h1_lookback: int = 1500,
+) -> str:
+    """Trade side from the combined Daily+1H HTF bias ("long"/"short"/"neutral").
+
+    Factored out of :func:`build_setup_context` so callers that decide many entry
+    bars within one 1H/Daily bar (e.g. a 5m backtest) can cache it — the result is
+    constant until a new HTF bar closes.
+    """
+    bias = htf_bias(
+        daily.tail(daily_lookback), h1.tail(h1_lookback), swing_length=swing_length
+    ).bias
+    return direction_from_bias(bias)
+
+
 # --------------------------------------------------------------------------- #
 # Detector -> SetupContext builder (integration-smoke tested on real data)     #
 # --------------------------------------------------------------------------- #
@@ -183,6 +202,7 @@ def build_setup_context(
     h1: pd.DataFrame,
     references: dict[str, pd.DataFrame],
     sessions: Sessions,
+    direction: str | None = None,
     swing_length: int = 20,
     range_lookback: int = 60,
     entry_lookback: int = 300,
@@ -202,10 +222,16 @@ def build_setup_context(
     checks are deliberately modest v1 heuristics; their exact ICT fidelity is
     validated by the Phase 5 backtest, not asserted here.
     """
-    bias = htf_bias(
-        daily.tail(daily_lookback), h1.tail(h1_lookback), swing_length=swing_length
-    ).bias
-    direction = direction_from_bias(bias)
+    # ``direction`` may be supplied pre-computed (and cached) by the caller; the
+    # result is identical to resolving it here from the same HTF windows.
+    if direction is None:
+        direction = resolve_direction(
+            daily,
+            h1,
+            swing_length=swing_length,
+            daily_lookback=daily_lookback,
+            h1_lookback=h1_lookback,
+        )
     if direction == "neutral":
         return None
 

@@ -16,7 +16,11 @@ import pytest
 from ict_bot.config import REPO_ROOT, load_settings
 from ict_bot.data.store import BarStore
 from ict_bot.ict.sessions import Sessions
-from ict_bot.strategy.signal import SignalEngine, build_setup_context
+from ict_bot.strategy.signal import (
+    SignalEngine,
+    build_setup_context,
+    resolve_direction,
+)
 
 
 @pytest.fixture(scope="module")
@@ -65,3 +69,36 @@ def test_replay_month_produces_reasonable_signal_count(store):
     # the 5-20 target (that's a post-tuning property of Phase 5), only that it is
     # neither dead nor firing on a large fraction of bars.
     assert 0 <= signals < len(decision_bars) // 3
+
+
+def test_injected_direction_matches_internal_computation(store):
+    # The cached-direction path (resolve_direction injected) must produce exactly
+    # the same SetupContext as letting build_setup_context resolve it internally.
+    spy15 = store.read_bars("SPY", "15m")
+    qqq15 = store.read_bars("QQQ", "15m")
+    iwm15 = store.read_bars("IWM", "15m")
+    daily = store.read_bars("SPY", "1d")
+    h1 = store.read_bars("SPY", "1h")
+    if min(len(spy15), len(qqq15), len(iwm15)) < 1000 or len(daily) < 60 or len(h1) < 500:
+        pytest.skip("insufficient local data")
+
+    settings = load_settings()
+    sessions = Sessions.from_settings(settings)
+
+    checked = 0
+    for ts in spy15.index[-400:]:
+        kwargs = dict(
+            timestamp=ts,
+            entry_tf=spy15.loc[:ts],
+            daily=daily.loc[:ts],
+            h1=h1.loc[:ts],
+            references={"QQQ": qqq15.loc[:ts], "IWM": iwm15.loc[:ts]},
+            sessions=sessions,
+            swing_length=20,
+        )
+        internal = build_setup_context(**kwargs)
+        injected_dir = resolve_direction(daily.loc[:ts], h1.loc[:ts], swing_length=20)
+        injected = build_setup_context(**kwargs, direction=injected_dir)
+        assert internal == injected
+        checked += 1
+    assert checked > 0

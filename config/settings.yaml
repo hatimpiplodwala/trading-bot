@@ -26,7 +26,13 @@ risk:
   integer_shares_only: true  # Alpaca rejects bracket orders on fractional shares (Gotcha #9)
 
 signal:
-  min_confluence_score: 60
+  # Tuned on in-sample only; never against OOS (Gotcha #6).
+  # Cycle 1: 60 -> 70 improved IS PF 1.02 -> 1.13 (scores 60-69 were net-negative).
+  # Cycle 2: 70 -> 75 *regressed* to PF 1.01 and exposed a non-monotonic edge
+  #   (80-84 PF 2.53 but 90+ PF 0.68 — over-stacked confluences = late entries).
+  #   Reverted. A score *band* would fit in-sample noise (overfitting), so we keep
+  #   the simple floor. 70 is the tuned config; OOS is the verdict.
+  min_confluence_score: 70
   # Confluence weights — a starting hypothesis, validated out-of-sample (Gotcha #6).
   weights:
     htf_aligned: 25

@@ -18,9 +18,11 @@ from ict_bot.strategy.signal import (
     CandidateSignal,
     SetupContext,
     SignalEngine,
+    build_setup_context,
     direction_from_bias,
     killzone_confluences,
     ranges_overlap,
+    resolve_direction,
 )
 
 WEIGHTS = {
@@ -104,11 +106,18 @@ def test_losing_streak_halts_engine_entries():
 def test_from_settings_builds_consistent_engine():
     from ict_bot.config import load_settings
 
-    engine = SignalEngine.from_settings(load_settings())
-    assert engine.min_score == 60
+    settings = load_settings()
+    engine = SignalEngine.from_settings(settings)
+    # Wiring check (tune-proof): threshold and weights come straight from settings.
+    assert engine.min_score == settings["signal"]["min_confluence_score"]
     assert engine.weights["htf_aligned"] == 25
-    sig = engine.evaluate(_ctx(STRONG), equity=100_000)
-    assert sig is not None and sig.score == 70
+    # A full-confluence context (score 100) clears any threshold <= 100.
+    everything = Confluences(
+        htf_aligned=True, silver_bullet=True, ny_kill_zone=True, discount_premium=True,
+        ote=True, fvg_ob_overlap=True, smt_divergence=True, liquidity_sweep=True,
+    )
+    sig = engine.evaluate(_ctx(everything), equity=100_000)
+    assert sig is not None and sig.score == 100
 
 
 # --- pure builder helpers ---
@@ -134,3 +143,19 @@ def test_ranges_overlap():
     assert ranges_overlap((100.0, 105.0), (101.0, 102.0))     # contained
     assert ranges_overlap((100.0, 101.0), (101.0, 102.0))     # touching edge
     assert not ranges_overlap((100.0, 101.0), (102.0, 103.0)) # disjoint
+
+
+def test_injected_neutral_direction_short_circuits():
+    # An injected "neutral" direction returns None before any detector runs, so
+    # the HTF frames are never consulted (caching path for the backtest).
+    empty = pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+    ctx = build_setup_context(
+        timestamp=TS,
+        entry_tf=empty,
+        daily=empty,
+        h1=empty,
+        references={},
+        sessions=None,
+        direction="neutral",
+    )
+    assert ctx is None

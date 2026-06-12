@@ -21,7 +21,11 @@ from backtesting import Backtest, Strategy
 from ict_bot.backtest.metrics import to_backtesting_frame
 from ict_bot.ict.sessions import Sessions
 from ict_bot.strategy.risk import DailyLossLimit
-from ict_bot.strategy.signal import SignalEngine, build_setup_context
+from ict_bot.strategy.signal import (
+    SignalEngine,
+    build_setup_context,
+    resolve_direction,
+)
 
 _ET = "America/New_York"
 
@@ -47,6 +51,8 @@ class ICTStrategy(Strategy):
         self.engine = SignalEngine.from_settings(self.settings, daily_gate=gate)
         self._seen_closed = 0
         self._cur_day = None
+        self._dir_cache_key = None
+        self._dir_cache_val = None
 
     def next(self) -> None:
         i = len(self.data)  # number of visible bars == current position + 1
@@ -64,13 +70,30 @@ class ICTStrategy(Strategy):
         if self.position:  # max one concurrent position (v1)
             return
 
+        daily_slice = self.daily.loc[:ts]
+        h1_slice = self.h1.loc[:ts]
+        # HTF direction is constant until a new Daily/1H bar closes; cache it by
+        # the latest (daily, h1) timestamps so the heavy market-structure call
+        # runs once per HTF bar instead of once per entry bar (exact, not lossy).
+        key = (
+            daily_slice.index[-1] if len(daily_slice) else None,
+            h1_slice.index[-1] if len(h1_slice) else None,
+        )
+        if key != self._dir_cache_key:
+            self._dir_cache_key = key
+            self._dir_cache_val = resolve_direction(
+                daily_slice, h1_slice, swing_length=self.swing_length
+            )
+        direction = self._dir_cache_val
+
         ctx = build_setup_context(
             timestamp=ts,
             entry_tf=self.entry_canonical.iloc[:i],
-            daily=self.daily.loc[:ts],
-            h1=self.h1.loc[:ts],
+            daily=daily_slice,
+            h1=h1_slice,
             references={k: v.loc[:ts] for k, v in self.references.items()},
             sessions=self.sessions,
+            direction=direction,
             swing_length=self.swing_length,
         )
         if ctx is None:
@@ -79,10 +102,12 @@ class ICTStrategy(Strategy):
         if signal is None:
             return
 
+        # Tag each trade with its confluence score so backtests can bucket
+        # outcomes by score (in-sample tuning evidence — never an OOS target).
         if signal.direction == "long":
-            self.buy(size=signal.qty, sl=signal.stop, tp=signal.target)
+            self.buy(size=signal.qty, sl=signal.stop, tp=signal.target, tag=signal.score)
         else:
-            self.sell(size=signal.qty, sl=signal.stop, tp=signal.target)
+            self.sell(size=signal.qty, sl=signal.stop, tp=signal.target, tag=signal.score)
 
 
 def _configured_strategy(

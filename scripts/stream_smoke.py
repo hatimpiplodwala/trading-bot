@@ -33,13 +33,16 @@ def main() -> None:
 
     async def on_bar(row: dict[str, Any]) -> None:
         gst = format_gst(row["timestamp"])
+        # flush=True so bars appear immediately even when stdout is piped to a
+        # file (block-buffered) rather than a terminal (line-buffered).
         print(
             f"[{gst}] {row['symbol']} "
             f"O={row['open']} H={row['high']} L={row['low']} "
-            f"C={row['close']} V={row['volume']}"
+            f"C={row['close']} V={row['volume']}",
+            flush=True,
         )
 
-    print(f"Streaming {args.symbols} (Ctrl+C to stop)...")
+    print(f"Streaming {args.symbols} (Ctrl+C to stop)...", flush=True)
     feed.stream_bars(args.symbols, on_bar)
 
 
