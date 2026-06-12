@@ -69,3 +69,33 @@ a test confirms already-formed FVGs never repaint when more bars arrive.
 # Visual sanity check — renders an interactive chart with FVGs, OBs, swings, structure
 uv run python scripts/plot_setups.py        # writes data/charts/SPY_15m_setups.html
 ```
+
+## Phase 3 — Sessions, bias & SMT
+
+- `sessions.py` — DST-aware kill zones (Silver Bullet, NY AM/PM, pre-market) resolved
+  against ET wall-clock; pre-market is observe-only (Gotcha #9).
+- `bias.py` — HTF bias from Daily + 1H structure. Daily leads; the 1H only vetoes on a
+  direct conflict, so a mixed read stands aside (`neutral`).
+- `smt.py` — SMT divergence of SPY against QQQ/IWM: a higher high (or lower low) the
+  reference fails to confirm. References are divergence input only — never traded (Gotcha #8).
+
+## Phase 4 — Signal & risk engine
+
+`src/ict_bot/strategy/` turns detector output into sized trade candidates on one code
+path shared by the live loop and the backtest:
+
+- `confluence.py` — scores a setup 0–100 from the confluences present (weights in
+  `config/settings.yaml`); minimum to consider is **60**. The eight weights sum to 120,
+  so the score is clamped to 100.
+- `risk.py` — `position_size` (risk-budget ÷ per-share-risk, **floored to whole shares**
+  and capped by a notional fraction of equity — the cap binds often on a ~$570 name);
+  `compute_atr` (ATR14 via `pandas_ta_classic` with a manual Wilder fallback); `stop_loss`
+  = entry ± `max(1.5×ATR, structural distance)`; `take_profit` at an R-multiple; and
+  `DailyLossLimit`, the −2%/ET-day realized-P&L circuit breaker.
+- `signal.py` — `SignalEngine.evaluate` scores a `SetupContext`, applies the daily gate,
+  sizes the position, and emits a `CandidateSignal` (or suppresses it). `build_setup_context`
+  wires the ICT detectors over bounded rolling windows (live-realistic, no lookahead).
+
+Per-confluence detection is deliberately a modest v1 heuristic; its ICT fidelity is the
+job of the Phase 5 out-of-sample backtest, not unit assertions. A month-long replay of
+real SPY 15m bars confirms the engine is selective rather than firing on every bar.

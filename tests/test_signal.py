@@ -1,0 +1,136 @@
+"""Signal engine decision-logic tests (Phase 4).
+
+The engine turns a SetupContext (direction + price geometry + which confluences
+are present) into a CandidateSignal, or suppresses it. A signal is emitted only
+when the confluence score clears the threshold, the daily loss limit allows a new
+entry, and the risk-sized quantity is at least one whole share. Stop/target/qty
+geometry is delegated to the risk module (tested there); here we test the gating
+and the wiring. Detector -> context assembly is covered by the integration smoke.
+"""
+
+from __future__ import annotations
+
+import pandas as pd
+
+from ict_bot.strategy.confluence import Confluences
+from ict_bot.strategy.risk import DailyLossLimit
+from ict_bot.strategy.signal import (
+    CandidateSignal,
+    SetupContext,
+    SignalEngine,
+    direction_from_bias,
+    killzone_confluences,
+    ranges_overlap,
+)
+
+WEIGHTS = {
+    "htf_aligned": 25,
+    "silver_bullet": 20,
+    "ny_kill_zone": 10,
+    "discount_premium": 15,
+    "ote": 10,
+    "fvg_ob_overlap": 15,
+    "smt_divergence": 10,
+    "liquidity_sweep": 15,
+}
+
+TS = pd.Timestamp("2024-03-01 15:00", tz="UTC")
+
+
+def _engine(daily_gate=None) -> SignalEngine:
+    return SignalEngine(weights=WEIGHTS, min_score=60, risk_pct=0.005, daily_gate=daily_gate)
+
+
+def _ctx(confluences: Confluences, direction: str = "long") -> SetupContext:
+    return SetupContext(
+        timestamp=TS,
+        direction=direction,
+        entry=100.0,
+        atr=2.0,
+        structural_level=95.0,
+        confluences=confluences,
+    )
+
+
+# htf_aligned(25) + silver_bullet(20) + ny_kill_zone(10) + fvg_ob_overlap(15) = 70
+STRONG = Confluences(htf_aligned=True, silver_bullet=True, ny_kill_zone=True, fvg_ob_overlap=True)
+# htf_aligned(25) + ny_kill_zone(10) = 35
+WEAK = Confluences(htf_aligned=True, ny_kill_zone=True)
+
+
+def test_emits_candidate_when_score_and_size_ok():
+    sig = _engine().evaluate(_ctx(STRONG), equity=100_000)
+    assert isinstance(sig, CandidateSignal)
+    assert sig.direction == "long"
+    assert sig.score == 70
+    assert sig.entry == 100.0
+    assert sig.stop == 95.0          # max(1.5*ATR=3, structural 5) -> 5 below
+    assert sig.target == 110.0       # 2R of 5-pt risk
+    assert sig.qty == 100            # floor(500 / 5)
+    assert sig.timestamp == TS
+
+
+def test_suppresses_below_threshold():
+    assert _engine().evaluate(_ctx(WEAK), equity=100_000) is None
+
+
+def test_suppresses_when_daily_limit_breached():
+    gate = DailyLossLimit(limit_pct=0.02)
+    gate.start_day(starting_equity=100_000)
+    gate.register(-3_000.0)  # -3% > 2% limit
+    assert _engine(daily_gate=gate).evaluate(_ctx(STRONG), equity=100_000) is None
+
+
+def test_suppresses_when_size_rounds_to_zero():
+    # Tiny equity -> sub-one-share -> no trade even with a strong score.
+    assert _engine().evaluate(_ctx(STRONG), equity=500) is None
+
+
+def test_suppresses_when_direction_neutral():
+    assert _engine().evaluate(_ctx(STRONG, direction="neutral"), equity=100_000) is None
+
+
+def test_losing_streak_halts_engine_entries():
+    # Acceptance: the daily loss limit halts new entries after a losing streak.
+    gate = DailyLossLimit(limit_pct=0.02)
+    gate.start_day(starting_equity=100_000)
+    engine = _engine(daily_gate=gate)
+    assert engine.evaluate(_ctx(STRONG), equity=100_000) is not None  # first entry ok
+    gate.register(-1_200.0)
+    gate.register(-1_200.0)  # cumulative -2.4% > 2% limit
+    assert engine.evaluate(_ctx(STRONG), equity=100_000) is None      # halted
+
+
+def test_from_settings_builds_consistent_engine():
+    from ict_bot.config import load_settings
+
+    engine = SignalEngine.from_settings(load_settings())
+    assert engine.min_score == 60
+    assert engine.weights["htf_aligned"] == 25
+    sig = engine.evaluate(_ctx(STRONG), equity=100_000)
+    assert sig is not None and sig.score == 70
+
+
+# --- pure builder helpers ---
+
+def test_direction_from_bias():
+    assert direction_from_bias("bullish") == "long"
+    assert direction_from_bias("bearish") == "short"
+    assert direction_from_bias("neutral") == "neutral"
+
+
+def test_killzone_confluences():
+    # Silver bullet sits inside NY AM -> both flags; AM/PM -> kill zone only;
+    # premarket is observe-only (Gotcha #9) -> neither; outside -> neither.
+    assert killzone_confluences("silver_bullet") == (True, True)
+    assert killzone_confluences("ny_am") == (False, True)
+    assert killzone_confluences("ny_pm") == (False, True)
+    assert killzone_confluences("ny_premarket") == (False, False)
+    assert killzone_confluences(None) == (False, False)
+
+
+def test_ranges_overlap():
+    assert ranges_overlap((100.0, 102.0), (101.0, 103.0))     # partial
+    assert ranges_overlap((100.0, 105.0), (101.0, 102.0))     # contained
+    assert ranges_overlap((100.0, 101.0), (101.0, 102.0))     # touching edge
+    assert not ranges_overlap((100.0, 101.0), (102.0, 103.0)) # disjoint
