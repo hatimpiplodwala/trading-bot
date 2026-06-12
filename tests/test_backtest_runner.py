@@ -93,6 +93,11 @@ def test_run_backtest_smoke(store):
     metrics = extract_metrics(stats)
     assert metrics["num_trades"] >= 0
     assert "profit_factor" in metrics
+    # Trades carry their confluence set as the tag (enables edge attribution).
+    if len(stats._trades):
+        from ict_bot.strategy.confluence import Confluences
+
+        assert all(isinstance(t, Confluences) for t in stats._trades["Tag"])
 
 
 def test_trades_are_intraday_and_flat_by_close(store):

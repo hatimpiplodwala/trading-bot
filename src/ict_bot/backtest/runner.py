@@ -124,12 +124,13 @@ class ICTStrategy(Strategy):
         if signal is None:
             return
 
-        # Tag each trade with its confluence score so backtests can bucket
-        # outcomes by score (in-sample tuning evidence — never an OOS target).
+        # Tag each trade with the confluences present (score is derivable) so a
+        # backtest can attribute realized edge to each confluence, or bucket by
+        # score — in-sample analysis only, never an OOS target.
         if signal.direction == "long":
-            self.buy(size=signal.qty, sl=signal.stop, tp=signal.target, tag=signal.score)
+            self.buy(size=signal.qty, sl=signal.stop, tp=signal.target, tag=signal.confluences)
         else:
-            self.sell(size=signal.qty, sl=signal.stop, tp=signal.target, tag=signal.score)
+            self.sell(size=signal.qty, sl=signal.stop, tp=signal.target, tag=signal.confluences)
 
 
 def _configured_strategy(
