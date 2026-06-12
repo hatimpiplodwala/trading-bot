@@ -48,3 +48,24 @@ higher-timeframe bar only once it is fully closed (the forming bar is dropped) �
 this is the single source of truth shared by the live loop and the backtest, so
 the no-lookahead guarantee is identical in both. The `4h` timeframe is derived by
 resampling, never fetched.
+
+## Phase 2 — Core ICT detection
+
+Detectors in `src/ict_bot/ict/` wrap [`smartmoneyconcepts`](https://github.com/joshyattridge/smart-money-concepts)
+and add the lifecycle/interpretation logic ICT needs:
+
+- `structure.py` — swings + BOS/CHOCH → `MarketStructure` bias (only *broken* structure sets bias).
+- `fvg.py` — fair value gaps with mitigation state.
+- `order_blocks.py` — OBs with an `active → mitigated → breaker` state machine.
+- `liquidity.py` — smc BSL/SSL/sweeps + equal-highs/lows clustering within `0.1 × ATR`.
+- `zones.py` — dealing range: premium/discount/equilibrium and the OTE band (pure math).
+
+All smc imports go through `ict/_smc.py`, which suppresses the library's import
+banner (it crashes cp1252 Windows consoles). Detectors are pure functions of the
+window passed in, so the no-lookahead guarantee is enforced at the call site;
+a test confirms already-formed FVGs never repaint when more bars arrive.
+
+```bash
+# Visual sanity check — renders an interactive chart with FVGs, OBs, swings, structure
+uv run python scripts/plot_setups.py        # writes data/charts/SPY_15m_setups.html
+```
