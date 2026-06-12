@@ -12,6 +12,7 @@ trade path). Run it during US market hours:
 from __future__ import annotations
 
 import argparse
+import signal
 
 from ict_bot.broker.alpaca import AlpacaBroker
 from ict_bot.broker.dryrun import DryRunBroker
@@ -51,7 +52,23 @@ def build_trader(settings: dict, *, dry_run: bool) -> LiveTrader:
         timeframe=settings["entry_timeframe"],
         seed_days=live_cfg.get("seed_days", 4),
         poll_buffer_s=live_cfg.get("poll_buffer_seconds", 20),
+        heartbeat_hours=settings.get("alerts", {}).get("heartbeat_hours", 1),
+        max_frame_bars=settings.get("service", {}).get("max_frame_bars", 500),
     )
+
+
+def _install_signal_handlers(trader: LiveTrader) -> None:
+    """Route Ctrl-C / Ctrl-Break / SIGTERM to a graceful stop (NSSM stop, too)."""
+    def _handler(_signum, _frame):
+        trader.request_stop()
+
+    for name in ("SIGINT", "SIGBREAK", "SIGTERM"):
+        sig = getattr(signal, name, None)
+        if sig is not None:
+            try:
+                signal.signal(sig, _handler)
+            except (ValueError, OSError):  # not settable on this platform/thread
+                pass
 
 
 def main() -> None:
@@ -62,13 +79,20 @@ def main() -> None:
                         help="seed + a single poll, then exit (smoke test)")
     args = parser.parse_args()
 
-    configure_logging()
     settings = load_settings()
+    # Smoke runs stay console-only; the long-running service also writes a
+    # daily-rotating log file.
+    logfile = None if args.once else str(
+        REPO_ROOT / settings.get("service", {}).get("log_file", "logs/ictbot.log")
+    )
+    configure_logging(logfile=logfile)
+
     trader = build_trader(settings, dry_run=args.dry_run)
     if args.once:
         trader.seed()
         trader.poll_once()
     else:
+        _install_signal_handlers(trader)
         trader.run()
 
 

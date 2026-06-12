@@ -83,6 +83,9 @@ broker:
 live:
   poll_buffer_seconds: 20    # wait after each 15m boundary for the bar to finalize
   seed_days: 4               # history pulled at startup to seed ATR + opening range
+service:
+  log_file: logs/ictbot.log  # daily-rotating, 30-day retention (Phase 8)
+  max_frame_bars: 500        # cap the rolling bar frame so RSS stays flat on long runs
 
 timezone:
   market: America/New_York   # ET, DST-aware

@@ -11,6 +11,8 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import logging
+import logging.handlers
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 UTC = _dt.timezone.utc
@@ -42,13 +44,31 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(payload, default=str)
 
 
-def configure_logging(level: int | str = logging.INFO) -> None:
-    """Install the JSON formatter on the root logger (idempotent)."""
-    handler = logging.StreamHandler()
-    handler.setFormatter(JsonFormatter())
+def configure_logging(level: int | str = logging.INFO, logfile: str | None = None) -> None:
+    """Install the JSON formatter on the root logger (idempotent).
+
+    Always logs to the console. When ``logfile`` is given (the live service),
+    also writes to a daily-rotating file keeping 30 days of history.
+    """
+    formatter = JsonFormatter()
     root = logging.getLogger()
+    for handler in root.handlers[:]:  # release any prior handlers (incl. file handles)
+        handler.close()
     root.handlers.clear()
-    root.addHandler(handler)
+
+    console = logging.StreamHandler()
+    console.setFormatter(formatter)
+    root.addHandler(console)
+
+    if logfile:
+        path = Path(logfile)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        file_handler = logging.handlers.TimedRotatingFileHandler(
+            path, when="midnight", backupCount=30, encoding="utf-8"
+        )
+        file_handler.setFormatter(formatter)
+        root.addHandler(file_handler)
+
     root.setLevel(level)
     # pandas_ta_classic warns on short windows (< ATR length); compute_atr already
     # falls back to a manual Wilder ATR, so silence the expected noise.

@@ -80,11 +80,68 @@ _BREAKOUT_LONG = {
 _DAY = "2026-06-11"
 
 
+class _FakeFeed:
+    def __init__(self, frame):
+        self._frame = frame
+
+    def get_historical_bars(self, symbol, timeframe, start, end):
+        return self._frame
+
+
+class _Rec:
+    def __init__(self):
+        self.events = []
+
+    def notify(self, event, message):
+        self.events.append((event, message))
+
+
 def test_next_boundary_rounds_up_15m_with_buffer():
     now = dt.datetime(2026, 6, 12, 10, 7, 30, tzinfo=dt.timezone.utc)
     assert next_boundary(now, 15, 20) == dt.datetime(2026, 6, 12, 10, 15, 20, tzinfo=dt.timezone.utc)
     now2 = dt.datetime(2026, 6, 12, 10, 45, 1, tzinfo=dt.timezone.utc)
     assert next_boundary(now2, 15, 0) == dt.datetime(2026, 6, 12, 11, 0, 0, tzinfo=dt.timezone.utc)
+
+
+def test_heartbeat_due_after_interval():
+    broker, state, session = DryRunBroker(100_000.0, True), StateStore(":memory:"), _session()
+    trader = LiveTrader("SPY", None, broker, state, LogNotifier(), session, heartbeat_hours=1)
+    t0 = dt.datetime(2026, 6, 15, 14, 0, tzinfo=dt.timezone.utc)
+    trader._last_heartbeat = t0
+    assert trader._heartbeat_due(t0 + dt.timedelta(minutes=30)) is False
+    assert trader._heartbeat_due(t0 + dt.timedelta(hours=1, minutes=1)) is True
+    # firing resets the timer
+    assert trader._heartbeat_due(t0 + dt.timedelta(hours=1, minutes=2)) is False
+
+
+def test_frame_trim_caps_length():
+    broker, state, session = DryRunBroker(100_000.0, True), StateStore(":memory:"), _session()
+    trader = LiveTrader("SPY", None, broker, state, LogNotifier(), session, max_frame_bars=10)
+    trader._frame = _frame(_day(_DAY))           # 26 bars
+    trader._trim_frame()
+    assert len(trader._frame) == 10              # keeps the most recent only
+
+
+def test_request_stop_exits_run_loop_cleanly():
+    feed = _FakeFeed(_frame(_day(_DAY)))
+    notifier = _Rec()
+    trader = LiveTrader("SPY", feed, DryRunBroker(100_000.0, True),
+                        StateStore(":memory:"), notifier, _session())
+    trader.request_stop()
+    trader.run(max_iterations=3, sleep_fn=lambda s: None,
+               now_fn=lambda: dt.datetime(2026, 6, 15, 14, 0, tzinfo=dt.timezone.utc))
+    events = [e for e, _ in notifier.events]
+    assert "stop" in events and "error" not in events
+
+
+def test_run_honors_max_iterations_when_market_closed():
+    feed = _FakeFeed(_frame(_day(_DAY)))
+    notifier = _Rec()
+    trader = LiveTrader("SPY", feed, DryRunBroker(100_000.0, market_open=False),
+                        StateStore(":memory:"), notifier, _session())
+    trader.run(max_iterations=2, sleep_fn=lambda s: None,
+               now_fn=lambda: dt.datetime(2026, 6, 15, 14, 0, tzinfo=dt.timezone.utc))
+    assert "stop" in [e for e, _ in notifier.events]
 
 
 def test_handle_bar_enters_on_breakout_and_records():

@@ -44,6 +44,7 @@ class LiveTrader:
     def __init__(
         self, symbol, feed, broker, state, notifier, session,
         timeframe: str = "15m", seed_days: int = 4, poll_buffer_s: int = 20,
+        heartbeat_hours: float = 1.0, max_frame_bars: int = 500,
     ) -> None:
         self._symbol = symbol
         self._feed = feed
@@ -54,10 +55,37 @@ class LiveTrader:
         self._timeframe = timeframe
         self._seed_days = seed_days
         self._poll_buffer_s = poll_buffer_s
+        self._heartbeat_hours = heartbeat_hours
+        self._max_frame_bars = max_frame_bars
         self._frame: pd.DataFrame | None = None
         self._last_ts: pd.Timestamp | None = None
         # The trade we believe is open, for reconciliation + the local trade log.
         self._entry: dict | None = None
+        self._stopped = False
+        self._last_heartbeat: dt.datetime | None = None
+
+    # --- lifecycle / health ----------------------------------------------
+    def request_stop(self) -> None:
+        """Ask the run loop to finish the current poll and exit (signal-safe)."""
+        self._stopped = True
+
+    def _heartbeat_due(self, now: dt.datetime) -> bool:
+        if self._heartbeat_hours <= 0 or self._last_heartbeat is None:
+            return False
+        if (now - self._last_heartbeat).total_seconds() >= self._heartbeat_hours * 3600:
+            self._last_heartbeat = now
+            return True
+        return False
+
+    def _emit_heartbeat(self) -> None:
+        pos = self._broker.get_position(self._symbol)
+        held = f"{pos.side} x{pos.qty}" if pos is not None else "flat"
+        self._notifier.notify("heartbeat", f"{self._symbol} alive — {held}")
+
+    def _trim_frame(self) -> None:
+        """Cap the rolling frame so a multi-day run keeps stable memory."""
+        if self._max_frame_bars and self._frame is not None and len(self._frame) > self._max_frame_bars:
+            self._frame = self._frame.iloc[-self._max_frame_bars:]
 
     # --- one decision + execution step -----------------------------------
     def handle_bar(self, frame: pd.DataFrame):
@@ -160,19 +188,39 @@ class LiveTrader:
             self._frame.loc[ts] = recent.loc[ts]
             self._frame = self._frame.sort_index()
             self.handle_bar(self._frame.loc[:ts])
+        self._trim_frame()
 
-    def run(self) -> None:
-        """Service loop: seed, then poll on each bar boundary during market hours."""
+    def run(self, *, max_iterations: int | None = None,
+            sleep_fn=time.sleep, now_fn=None) -> None:
+        """Service loop: seed, then poll on each bar boundary during market hours.
+
+        Polls only while the market is open and emits an hourly heartbeat.
+        :meth:`request_stop` (wired to SIGINT/SIGTERM in ``main``) makes it finish
+        the current cycle and exit cleanly, leaving any open position and its
+        resting broker stop untouched. ``max_iterations``/``sleep_fn``/``now_fn``
+        exist so the loop is testable without real time.
+        """
+        now_fn = now_fn or (lambda: dt.datetime.now(_UTC))
         self.seed()
         self._notifier.notify("start", f"ORB live loop up for {self._symbol}")
-        while True:
-            now = dt.datetime.now(_UTC)
+        self._last_heartbeat = now_fn()
+        iterations = 0
+        while not self._stopped:
+            if max_iterations is not None and iterations >= max_iterations:
+                break
+            iterations += 1
+            now = now_fn()
             target = next_boundary(now, 15, self._poll_buffer_s)
-            time.sleep(max((target - now).total_seconds(), 0))
+            sleep_fn(max((target - now).total_seconds(), 0))
+            if self._stopped:
+                break
             try:
-                if not self._broker.is_market_open():
-                    continue
-                self.poll_once()
+                tick = now_fn()
+                if self._heartbeat_due(tick):
+                    self._emit_heartbeat()
+                if self._broker.is_market_open():
+                    self.poll_once()
             except Exception as exc:  # never let one bad poll kill the loop
                 log.exception("poll failed")
                 self._notifier.notify("error", f"{self._symbol} poll failed: {exc}")
+        self._notifier.notify("stop", f"ORB live loop stopping for {self._symbol}")
