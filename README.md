@@ -1,126 +1,140 @@
-# ICT Paper-Trading Bot
+# Opening Range Breakout — an honest intraday trading bot
 
-Automated **paper-trading** bot for **SPY on Alpaca** using an ICT methodology
-stack with ATR14 confluence, a local Qwen3:4b LLM journal layer, and Telegram
-alerts. See [prd.md](prd.md) for the full phased build plan.
+An automated **paper-trading** bot that trades a single, well-understood edge —
+the **Opening Range Breakout** — on SPY through Alpaca's paper account. It runs as
+a background service, decides on closed 15-minute bars, and is always flat by the
+close.
 
-> Paper trading only. No live capital until the forward test is sustained-profitable.
+What makes this project worth reading isn't the bot — it's the **discipline**. Every
+strategy here had to clear an out-of-sample gate before it was trusted, and the
+ones that didn't were thrown out, even after a lot of work went into them.
 
-## Setup
+> **Paper trading only.** No real capital. The bot trades Alpaca's paper account;
+> nothing here is financial advice.
 
-Requires [uv](https://docs.astral.sh/uv/) (installs and pins Python 3.11 itself).
+---
 
-```bash
-uv sync                      # create .venv (Python 3.11) and install deps
-cp .env.example .env         # then fill in your keys (see below)
-uv run pytest                # run the test suite
-```
+## The story
 
-### Credentials (`.env`)
+This started as an **ICT (Inner Circle Trader)** bot — a full mechanical stack of
+market-structure, fair-value-gap, order-block and liquidity-sweep "confluences"
+scored 0–100. It was built end to end (detectors, a signal engine, a backtest
+harness) and then put on trial against a strict rule: **tune only on the first 18
+months, and let the untouched last 6 months be the verdict.**
 
-| Variable | Where to get it |
-|---|---|
-| `ALPACA_API_KEY` / `ALPACA_SECRET` | Alpaca **paper** account at <https://app.alpaca.markets/> |
-| `TELEGRAM_TOKEN` / `TELEGRAM_CHAT_ID` | `@BotFather` (Phase 7) |
+It failed. Repeatedly.
 
-`.env` is gitignored — never commit real keys.
+- Parameter tuning: in-sample profit factor 1.13 → out-of-sample **0.83**.
+- A structural rework (real stops and liquidity targets): in-sample 1.70 → OOS **0.18**.
+- Per-confluence attribution showed every signal *flipped sign* out-of-sample — the
+  "high-conviction" setups were the ones that lost money.
 
-## Phase 1 — Data pipeline
+So ICT was abandoned. That negative result — proven cheaply, before any money was
+at risk — is the most valuable thing the project produced.
 
-Built: `data/feed.py` (Alpaca IEX historical + WebSocket stream), `data/store.py`
-(DuckDB/Parquet, partitioned `symbol/timeframe/YYYY-MM`), `data/resample.py`
-(no-lookahead multi-timeframe aggregation), `data/quality.py` (IEX validity).
+The pivot was to **Opening Range Breakout**, a published intraday momentum effect:
+let the market define its range in the first 30 minutes, then trade the first
+decisive break of it. With **zero tuning**, ORB cleared the same out-of-sample gate
+that ICT never could. It was then hardened against the assumptions most likely to
+flatter it, and only then wired up to trade live (paper).
 
-```bash
-# 1. Bootstrap ~2 years of SPY + QQQ/IWM history into data/parquet/
-uv run python scripts/download_history.py
+---
 
-# 2. GATE (Gotcha #5): confirm IEX daily extremes track a consolidated reference.
-#    Exits non-zero on REVIEW — resolve before trusting detectors in Phase 2.
-uv run python scripts/validate_iex.py
+## How the bot trades
 
-# 3. Confirm the live WebSocket feed (run during US market hours, >=10 min)
-uv run python scripts/stream_smoke.py
-```
+Each ET session, on every closed 15-minute bar:
 
-Bars are indexed by **open time in UTC** everywhere; the resampler emits a
-higher-timeframe bar only once it is fully closed (the forming bar is dropped) —
-this is the single source of truth shared by the live loop and the backtest, so
-the no-lookahead guarantee is identical in both. The `4h` timeframe is derived by
-resampling, never fetched.
+1. **09:30–10:00 — build the range.** Track the high and low of the opening bars.
+2. **From 10:00 — watch for a break.** The first bar to *close* above the range goes
+   long; below it goes short. (A close, not a wick — fake-outs that get rejected
+   intrabar don't count.)
+3. **Size and stop.** Risk a fixed fraction of equity; the stop sits at the opposite
+   side of the range (floored at ½·ATR so a tight range can't make a hair-trigger
+   stop). Whole shares, no leverage.
+4. **One trade per day. No new entries after 15:30. Flat by 15:45** — never held
+   overnight.
 
-## Phase 2 — Core ICT detection
+The single most important design choice: **the live bot and the backtest run the
+exact same decision code** ([`orb_session.py`](src/ict_bot/strategy/orb_session.py)
+is shared by both). The backtest isn't a separate model of the strategy — it *is*
+the strategy, replayed on history. That's what makes the validation mean something.
 
-Detectors in `src/ict_bot/ict/` wrap [`smartmoneyconcepts`](https://github.com/joshyattridge/smart-money-concepts)
-and add the lifecycle/interpretation logic ICT needs:
+---
 
-- `structure.py` — swings + BOS/CHOCH → `MarketStructure` bias (only *broken* structure sets bias).
-- `fvg.py` — fair value gaps with mitigation state.
-- `order_blocks.py` — OBs with an `active → mitigated → breaker` state machine.
-- `liquidity.py` — smc BSL/SSL/sweeps + equal-highs/lows clustering within `0.1 × ATR`.
-- `zones.py` — dealing range: premium/discount/equilibrium and the OTE band (pure math).
+## What the validation actually says
 
-All smc imports go through `ict/_smc.py`, which suppresses the library's import
-banner (it crashes cp1252 Windows consoles). Detectors are pure functions of the
-window passed in, so the no-lookahead guarantee is enforced at the call site;
-a test confirms already-formed FVGs never repaint when more bars arrive.
+On SPY, ~4.5 years (2022–2026), realistic next-bar-open fills:
 
-```bash
-# Visual sanity check — renders an interactive chart with FVGs, OBs, swings, structure
-uv run python scripts/plot_setups.py        # writes data/charts/SPY_15m_setups.html
-```
+- **Clears the gate** (profit factor > 1.2, max drawdown < 15%) **out-of-sample**.
+- **Survives the 2022 bear** — because it trades both directions, the down-trend fed
+  it rather than killing it. This retired the biggest fear ("only works in a bull
+  market").
+- **Survives realistic fills** — the edge barely moves when entries fill at the next
+  bar's open instead of the signal bar's close.
 
-## Phase 3 — Sessions, bias & SMT
+And, just as importantly, what the validation says *doesn't* work:
 
-- `sessions.py` — DST-aware kill zones (Silver Bullet, NY AM/PM, pre-market) resolved
-  against ET wall-clock; pre-market is observe-only (Gotcha #9).
-- `bias.py` — HTF bias from Daily + 1H structure. Daily leads; the 1H only vetoes on a
-  direct conflict, so a mixed read stands aside (`neutral`).
-- `smt.py` — SMT divergence of SPY against QQQ/IWM: a higher high (or lower low) the
-  reference fails to confirm. References are divergence input only — never traded (Gotcha #8).
+- **A parameter ensemble** (blending 15/30/60-minute ranges) *hurt* — averaging in
+  weaker windows diluted the good one.
+- **Cross-asset diversification** (QQQ, IWM, TLT bonds, GLD gold) found **no new edge**
+  to diversify into — only SPY independently passes. Adding low-correlation assets
+  cuts drawdown but erodes the edge, so it was rejected.
 
-## Phase 4 — Signal & risk engine
+The honest bottom line: **the edge is real but thin and regime-dependent.** Its value
+is risk-adjusted (low drawdown, no overnight exposure), not spectacular returns.
+This is a forward-test candidate, not a finished money machine.
 
-`src/ict_bot/strategy/` turns detector output into sized trade candidates on one code
-path shared by the live loop and the backtest:
+---
 
-- `confluence.py` — scores a setup 0–100 from the confluences present (weights in
-  `config/settings.yaml`); minimum to consider is **60**. The eight weights sum to 120,
-  so the score is clamped to 100.
-- `risk.py` — `position_size` (risk-budget ÷ per-share-risk, **floored to whole shares**
-  and capped by a notional fraction of equity — the cap binds often on a ~$570 name);
-  `compute_atr` (ATR14 via `pandas_ta_classic` with a manual Wilder fallback); `stop_loss`
-  = entry ± `max(1.5×ATR, structural distance)`; `take_profit` at an R-multiple; and
-  `DailyLossLimit`, the −2%/ET-day realized-P&L circuit breaker.
-- `signal.py` — `SignalEngine.evaluate` scores a `SetupContext`, applies the daily gate,
-  sizes the position, and emits a `CandidateSignal` (or suppresses it). `build_setup_context`
-  wires the ICT detectors over bounded rolling windows (live-realistic, no lookahead).
+## Architecture
 
-Per-confluence detection is deliberately a modest v1 heuristic; its ICT fidelity is the
-job of the Phase 5 out-of-sample backtest, not unit assertions. A month-long replay of
-real SPY 15m bars confirms the engine is selective rather than firing on every bar.
+| Layer | Modules | What it does |
+| --- | --- | --- |
+| **Strategy** | [`strategy/orb.py`](src/ict_bot/strategy/orb.py), [`orb_session.py`](src/ict_bot/strategy/orb_session.py), [`risk.py`](src/ict_bot/strategy/risk.py) | Pure breakout/stop/target math; the stateful per-session decision core; fixed-fractional sizing + daily-loss limit. |
+| **Backtest** | [`backtest/`](src/ict_bot/backtest/) | Drives the *same* decision core through [backtesting.py](https://kernc.github.io/backtesting.py/); train/OOS split, ensemble + walk-forward + cross-asset screening tools. |
+| **Live loop** | [`ops/live_trader.py`](src/ict_bot/ops/live_trader.py), [`broker/`](src/ict_bot/broker/), [`ops/state.py`](src/ict_bot/ops/state.py) | Seeds history, wakes on each bar close, executes via Alpaca (market entry + **resting broker-side stop**), durable one-trade-per-day, graceful shutdown. |
+| **Service** | [`main.py`](src/ict_bot/main.py), [`service/`](service/) | CLI entry point and a Windows NSSM service wrapper (auto-restart, daily-rotating logs). |
 
-## Phase 5 — Backtest harness
+Data is Alpaca's free IEX feed, stored as partitioned Parquet, indexed by bar
+**open time in UTC** everywhere.
 
-`src/ict_bot/backtest/` runs the **same** signal/risk code through
-[`backtesting.py`](https://kernc.github.io/backtesting.py/) — no separate backtest logic:
+---
 
-- `runner.py` — `ICTStrategy` drives the engine bar-by-bar. SPY entry-TF bars are the
-  primary series; Daily/1H and the QQQ/IWM references travel as config and are sliced to
-  `<= ts` each bar (no lookahead, enforced by a test). One position at a time; the daily
-  −2% loss limit is fed from realized trade P&L. Slippage of `slippage_cents`/share is
-  modelled as a spread.
-- `split.py` — `train_oos_split` reserves the most recent `oos_months` **untouched** as
-  the out-of-sample verdict set (Gotcha #6); the rest is in-sample tuning.
-- `metrics.py` — maps backtesting stats to our metric set (incl. avg R-multiple and
-  trades/month) and renders an in-sample vs. OOS report. **OOS gate: PF > 1.2 and max
-  drawdown < 15%** — in-sample alone proves nothing.
+## Try it
+
+Requires [uv](https://docs.astral.sh/uv/) (it installs and pins Python 3.11).
 
 ```bash
-# Runs in-sample + OOS, writes backtest/results/YYYY-MM-DD.md (gitignored artifact)
-uv run python scripts/run_backtest.py
+uv sync                              # create .venv + install deps
+cp .env.example .env                 # add your Alpaca PAPER keys
+uv run pytest                        # ~200 tests
+
+uv run python scripts/download_history.py    # bootstrap history into data/parquet/
+uv run python scripts/run_orb_backtest.py    # the out-of-sample report
+
+uv run python -m ict_bot.main --dry-run --once   # smoke test: one poll, no orders
+uv run python -m ict_bot.main --dry-run          # watch a live session, zero orders
+uv run python -m ict_bot.main                    # trade the Alpaca PAPER account
 ```
 
-Tuning rule: iterate weights/ATR multiples against in-sample only; the OOS run is the
-verdict, not the tuning target. If OOS fails after ≤3 in-sample cycles, the strategy
-needs structural rework — not more parameter tweaks.
+Running it unattended as a Windows service: see [`service/README.md`](service/README.md).
+
+`ALPACA_API_KEY` / `ALPACA_SECRET` come from an Alpaca **paper** account and live in
+`.env`, which is gitignored — never commit keys.
+
+---
+
+## Status & known limitations
+
+Phases 0–8 of the build are complete; what remains is the forward test — *running*
+the bot on paper and comparing it to the ledger.
+
+Held to the same honesty as the rest of the project:
+
+- **Free IEX data** is ~2–3% of consolidated volume; the opening-range extremes it
+  reports can differ from the true tape.
+- **A code review flagged that pre-market bars currently leak into the opening
+  range** (the 09:30 start isn't enforced) — a data-hygiene fix is pending, and the
+  headline numbers will be re-confirmed on regular-hours-only data afterward.
+- The edge is **thin and regime-dependent** — expect uneven months and treat the
+  paper forward-test as the real gate before ever considering capital.
