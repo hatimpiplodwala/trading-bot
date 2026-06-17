@@ -65,7 +65,9 @@ the strategy, replayed on history. That's what makes the validation mean somethi
 
 On SPY, ~4.5 years (2022–2026), realistic next-bar-open fills:
 
-- **Clears the gate** (profit factor > 1.2, max drawdown < 15%) **out-of-sample**.
+- **Clears the gate** (profit factor > 1.2, max drawdown < 15%) **out-of-sample** —
+  last 6 months: PF 1.37, Sharpe 1.79, −2.2% drawdown; full 4.5 years: PF 1.21,
+  +53%, −5.7% drawdown.
 - **Survives the 2022 bear** — because it trades both directions, the down-trend fed
   it rather than killing it. This retired the biggest fear ("only works in a bull
   market").
@@ -133,8 +135,8 @@ Held to the same honesty as the rest of the project:
 
 - **Free IEX data** is ~2–3% of consolidated volume; the opening-range extremes it
   reports can differ from the true tape.
-- **A code review flagged that pre-market bars currently leak into the opening
-  range** (the 09:30 start isn't enforced) — a data-hygiene fix is pending, and the
-  headline numbers will be re-confirmed on regular-hours-only data afterward.
+- A code-review pass caught pre/post-market bars leaking into the opening range and
+  added a shared regular-hours filter (09:30–16:00 ET) used by both the backtest and
+  the live loop; the numbers above are on that clean data.
 - The edge is **thin and regime-dependent** — expect uneven months and treat the
   paper forward-test as the real gate before ever considering capital.

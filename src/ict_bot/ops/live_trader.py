@@ -20,6 +20,7 @@ import time
 
 import pandas as pd
 
+from ict_bot.data.session import regular_hours
 from ict_bot.strategy.orb_session import Action, Enter
 
 _ET = "America/New_York"
@@ -177,7 +178,9 @@ class LiveTrader:
         """Fetch recent history and warm the session's opening-range state."""
         end = dt.datetime.now(_UTC)
         start = end - dt.timedelta(days=self._seed_days + 4)  # pad for weekends/ATR
-        self._frame = self._feed.get_historical_bars(self._symbol, self._timeframe, start, end)
+        fetched = self._feed.get_historical_bars(self._symbol, self._timeframe, start, end)
+        # Regular hours only — keep extended-hours bars out of the opening range.
+        self._frame = regular_hours(fetched) if fetched is not None else None
         if self._frame is None or self._frame.empty:
             log.warning("seed: no history for %s", self._symbol)
             return
@@ -194,6 +197,7 @@ class LiveTrader:
         start = (self._last_ts.to_pydatetime() - dt.timedelta(hours=1)) if self._last_ts is not None \
             else end - dt.timedelta(days=self._seed_days + 4)
         recent = self._feed.get_historical_bars(self._symbol, self._timeframe, start, end)
+        recent = regular_hours(recent) if recent is not None else recent
         if recent is None or recent.empty:
             return
         if self._frame is None:

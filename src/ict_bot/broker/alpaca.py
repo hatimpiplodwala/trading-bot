@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 
+from alpaca.common.exceptions import APIError
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderClass, OrderSide, PositionSide, TimeInForce
 from alpaca.trading.requests import (
@@ -57,8 +58,13 @@ class AlpacaBroker:
     def get_position(self, symbol: str) -> Position | None:
         try:
             p = self._client.get_open_position(symbol)
-        except Exception:  # no open position -> Alpaca raises
-            return None
+        except APIError as exc:
+            # 404 == genuinely flat. Any other API error (and any network error,
+            # which isn't an APIError at all) must propagate, not be misread as
+            # "no position" — that could skip a flatten or trigger a double-entry.
+            if getattr(exc, "status_code", None) == 404:
+                return None
+            raise
         side = "long" if p.side == PositionSide.LONG else "short"
         return Position(
             symbol=symbol, qty=abs(int(float(p.qty))), side=side,

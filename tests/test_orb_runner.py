@@ -13,6 +13,7 @@ import pytest
 
 from ict_bot.backtest.orb_runner import run_orb_backtest
 from ict_bot.config import REPO_ROOT, load_settings
+from ict_bot.data.session import regular_hours
 from ict_bot.data.store import BarStore
 
 
@@ -79,3 +80,19 @@ def test_orb_next_open_fills_stay_intraday(store):
     assert (entry_et.dt.date == exit_et.dt.date).all()
     # At most one trade per ET day.
     assert entry_et.dt.date.value_counts().max() <= 1
+
+
+def test_backtest_ignores_extended_hours_bars(store):
+    """The runner restricts to regular hours, so feeding it raw IEX bars (with
+    pre/post-market) gives the same result as pre-filtering to 09:30-16:00 ET."""
+    spy15 = store.read_bars("SPY", "15m")
+    if len(spy15) < 1000:
+        pytest.skip("insufficient local SPY 15m data")
+
+    segment = spy15[spy15.index >= spy15.index[-1] - pd.Timedelta(days=60)]
+    settings = load_settings()
+    raw = run_orb_backtest(segment, settings, fill_mode="next_open")
+    prefiltered = run_orb_backtest(regular_hours(segment), settings, fill_mode="next_open")
+
+    assert int(raw["# Trades"]) == int(prefiltered["# Trades"])
+    assert abs(float(raw["Return [%]"]) - float(prefiltered["Return [%]"])) < 1e-9

@@ -14,6 +14,7 @@ from backtesting import Backtest, Strategy
 
 from ict_bot.backtest.metrics import to_backtesting_frame
 from ict_bot.backtest.runner import _hhmm_to_minutes
+from ict_bot.data.session import regular_hours
 from ict_bot.strategy.orb import opening_range, orb_breakout, orb_stop, orb_target
 from ict_bot.strategy.risk import DailyLossLimit, compute_atr, position_size
 
@@ -153,6 +154,8 @@ def run_orb_backtest(
     """
     if fill_mode not in ("close", "next_open"):
         raise ValueError(f"fill_mode must be 'close' or 'next_open', got {fill_mode!r}")
+    rh = settings.get("regular_hours", {})
+    entry_segment = regular_hours(entry_segment, rh.get("start", "09:30"), rh.get("end", "16:00"))
     strategy = _configured_strategy(entry_segment, settings, fill_mode)
     mean_price = float(entry_segment["close"].mean())
     spread = (settings["backtest"]["slippage_cents"] / 100.0) / mean_price

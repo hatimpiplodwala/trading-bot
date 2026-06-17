@@ -14,9 +14,10 @@ wheels/
 .env.*
 !.env.example
 
-# Data & state (never commit market data, journals, or trade state)
-data/
-logs/
+# Data & state (never commit market data, journals, or trade state).
+# Anchored to repo root so they DON'T also ignore the src/ict_bot/data/ package.
+/data/
+/logs/
 *.db
 *.sqlite
 *.sqlite3
