@@ -5,6 +5,10 @@ surface the live loop uses. ORB's default has no take-profit (exit is the timed
 flatten), so a plain breakout entry is an **OTO**: a market entry that, once
 filled, leaves a resting stop at the broker — so a crashed bot can't strand an
 unprotected position. When a target is configured we submit a full **bracket**.
+Because that stop rests independently, the timed flatten cancels it first
+(:meth:`AlpacaBroker.cancel_orders`) before liquidating — otherwise Alpaca can
+reject the close (the stop holds the shares) or the orphaned stop fires after the
+close and re-opens a position before its DAY expiry.
 
 Constraints (Gotcha #9): integer shares only (enforced by ``risk.position_size``)
 and regular-hours entries only (gated by the loop via :meth:`is_market_open`).
@@ -16,8 +20,15 @@ import logging
 
 from alpaca.common.exceptions import APIError
 from alpaca.trading.client import TradingClient
-from alpaca.trading.enums import OrderClass, OrderSide, PositionSide, TimeInForce
+from alpaca.trading.enums import (
+    OrderClass,
+    OrderSide,
+    PositionSide,
+    QueryOrderStatus,
+    TimeInForce,
+)
 from alpaca.trading.requests import (
+    GetOrdersRequest,
     MarketOrderRequest,
     StopLossRequest,
     TakeProfitRequest,
@@ -81,6 +92,22 @@ class AlpacaBroker:
         log.info("submitted %s %s x%d stop=%.2f target=%s id=%s",
                  direction, symbol, int(qty), stop, target, order.id)
         return str(order.id)
+
+    def cancel_orders(self, symbol: str) -> None:
+        """Cancel any open orders for ``symbol`` (the resting OTO/bracket stop).
+
+        Symbol-scoped on purpose — never the account-wide ``cancel_orders()`` —
+        so an unrelated manual position in the same account is left untouched. A
+        leg that fills between the fetch and the cancel just 404s; that's benign.
+        """
+        req = GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[symbol])
+        for order in self._client.get_orders(filter=req):
+            try:
+                self._client.cancel_order_by_id(order.id)
+                log.info("cancelled open order %s id=%s", symbol, order.id)
+            except APIError as exc:
+                if getattr(exc, "status_code", None) != 404:
+                    raise  # 404 == already filled/cancelled; anything else is real
 
     def close_position(self, symbol: str) -> str:
         order = self._client.close_position(symbol)

@@ -55,6 +55,10 @@ class DryRunBroker:
                  direction, symbol, int(qty), stop, target)
         return oid
 
+    def cancel_orders(self, symbol: str) -> None:
+        self.orders.append({"kind": "cancel", "symbol": symbol})
+        log.info("DRY-RUN cancel open orders %s", symbol)
+
     def close_position(self, symbol: str) -> str:
         self._seq += 1
         oid = f"dryrun-{self._seq}"

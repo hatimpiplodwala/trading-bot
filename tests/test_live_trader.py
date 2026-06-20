@@ -11,10 +11,11 @@ from __future__ import annotations
 import datetime as dt
 
 import pandas as pd
+import pytest
 
 from ict_bot.broker.dryrun import DryRunBroker
 from ict_bot.ops.alerts import LogNotifier
-from ict_bot.ops.live_trader import LiveTrader, next_boundary
+from ict_bot.ops.live_trader import LiveTrader, next_boundary, timeframe_minutes
 from ict_bot.ops.state import StateStore
 from ict_bot.strategy.orb_session import Enter, ORBSession
 
@@ -96,6 +97,16 @@ class _Rec:
         self.events.append((event, message))
 
 
+@pytest.mark.parametrize("tf,minutes", [("5m", 5), ("15m", 15), ("1h", 60), ("4h", 240)])
+def test_timeframe_minutes(tf, minutes):
+    assert timeframe_minutes(tf) == minutes
+
+
+def test_timeframe_minutes_rejects_garbage():
+    with pytest.raises(ValueError):
+        timeframe_minutes("frog")
+
+
 def test_next_boundary_rounds_up_15m_with_buffer():
     now = dt.datetime(2026, 6, 12, 10, 7, 30, tzinfo=dt.timezone.utc)
     assert next_boundary(now, 15, 20) == dt.datetime(2026, 6, 12, 10, 15, 20, tzinfo=dt.timezone.utc)
@@ -150,6 +161,19 @@ def test_interruptible_sleep_returns_early_when_stopped():
     assert calls["n"] <= 3
 
 
+def test_run_polls_on_entry_timeframe_grid_not_hardcoded_15m():
+    # Poll cadence must follow entry_timeframe: a 5m bot wakes on the 5-minute
+    # grid (14:07:30 -> 14:10:00 = 150s), not the old hardcoded 15m grid (450s).
+    slept = []
+    trader = LiveTrader(
+        "SPY", _FakeFeed(_frame(_day(_DAY))), DryRunBroker(100_000.0, market_open=False),
+        StateStore(":memory:"), _Rec(), _session(), timeframe="5m", poll_buffer_s=0,
+    )
+    now = dt.datetime(2026, 6, 15, 14, 7, 30, tzinfo=dt.timezone.utc)
+    trader.run(max_iterations=1, sleep_fn=lambda s: slept.append(s), now_fn=lambda: now)
+    assert round(sum(slept)) == 150
+
+
 def test_run_honors_max_iterations_when_market_closed():
     feed = _FakeFeed(_frame(_day(_DAY)))
     notifier = _Rec()
@@ -196,6 +220,23 @@ def test_full_day_enters_then_flattens_by_close():
     kinds = [o["kind"] for o in broker.orders]
     assert kinds.count("entry") == 1 and kinds.count("close") == 1
     assert len(state.trades()) == 1
+
+
+def test_flatten_cancels_resting_stop_before_closing():
+    # The OTO entry leaves a resting stop at the broker. The timed flatten must
+    # cancel it BEFORE liquidating: otherwise Alpaca can reject the close (the
+    # stop is holding the shares) leaving an unprotected overnight position, or
+    # the orphaned stop can fire after the close and re-open a position before
+    # its DAY expiry.
+    broker, state, session = DryRunBroker(100_000.0, True), StateStore(":memory:"), _session()
+    trader = _trader(broker, state, session)
+    _drive(trader, _frame(_day(_DAY, _BREAKOUT_LONG)))
+
+    kinds = [o["kind"] for o in broker.orders]
+    assert "cancel" in kinds
+    assert kinds.index("cancel") < kinds.index("close")  # cancel before liquidation
+    cancel = next(o for o in broker.orders if o["kind"] == "cancel")
+    assert cancel["symbol"] == "SPY"
 
 
 def test_reconcile_records_stop_out_when_position_vanishes():

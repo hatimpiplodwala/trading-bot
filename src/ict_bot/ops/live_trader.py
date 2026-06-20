@@ -27,6 +27,19 @@ _ET = "America/New_York"
 _UTC = dt.timezone.utc
 log = logging.getLogger(__name__)
 
+_TF_UNIT_MIN = {"m": 1, "h": 60, "d": 1440}
+
+
+def timeframe_minutes(timeframe: str) -> int:
+    """Minutes per bar for a timeframe string (``"5m"``->5, ``"1h"``->60).
+
+    Drives the poll cadence so it tracks ``entry_timeframe`` instead of a literal.
+    """
+    text = timeframe.strip().lower()
+    if len(text) < 2 or text[-1] not in _TF_UNIT_MIN or not text[:-1].isdigit():
+        raise ValueError(f"Unrecognized timeframe: {timeframe!r}")
+    return int(text[:-1]) * _TF_UNIT_MIN[text[-1]]
+
 
 def next_boundary(now: dt.datetime, interval_min: int = 15, buffer_s: int = 0) -> dt.datetime:
     """The next ``interval_min`` grid time strictly after ``now``, plus a buffer.
@@ -54,6 +67,7 @@ class LiveTrader:
         self._notifier = notifier
         self._session = session
         self._timeframe = timeframe
+        self._interval_min = timeframe_minutes(timeframe)  # poll cadence == bar size
         self._seed_days = seed_days
         self._poll_buffer_s = poll_buffer_s
         self._heartbeat_hours = heartbeat_hours
@@ -124,6 +138,10 @@ class LiveTrader:
         if isinstance(action, Enter):
             return self._enter(action, ts, et_date, close)
         if action is Action.FLATTEN:
+            # Cancel the resting OTO stop FIRST: liquidating with it still live can
+            # be rejected (the stop holds the shares) or leave it to fire after the
+            # close and re-open a position before its DAY expiry.
+            self._broker.cancel_orders(self._symbol)
             self._broker.close_position(self._symbol)
             self._record_close(close, ts, reason="flat-by-close")
             self._notifier.notify("flatten", f"{self._symbol} flat @ {close:.2f}")
@@ -229,7 +247,7 @@ class LiveTrader:
                 break
             iterations += 1
             now = now_fn()
-            target = next_boundary(now, 15, self._poll_buffer_s)
+            target = next_boundary(now, self._interval_min, self._poll_buffer_s)
             self._interruptible_sleep(max((target - now).total_seconds(), 0), sleep_fn)
             if self._stopped:
                 break
