@@ -37,3 +37,8 @@ def load_settings(path: Path = SETTINGS_PATH) -> dict[str, Any]:
     """Parse ``config/settings.yaml`` into a dict."""
     with open(path, encoding="utf-8") as fh:
         return yaml.safe_load(fh)
+
+
+def hhmm_to_min(hhmm: str) -> int:
+    """``"HH:MM"`` (wall-clock) -> minutes since midnight."""
+    return int(hhmm[:2]) * 60 + int(hhmm[3:])

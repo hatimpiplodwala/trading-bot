@@ -21,15 +21,11 @@ from enum import Enum, auto
 
 import pandas as pd
 
+from ict_bot.config import hhmm_to_min as _to_min
 from ict_bot.strategy.orb import orb_breakout, orb_stop, orb_target
 from ict_bot.strategy.risk import DailyLossLimit, compute_atr, position_size
 
 _ET = "America/New_York"
-
-
-def _to_min(hhmm: str) -> int:
-    """``"HH:MM"`` (ET wall-clock) -> minutes since midnight."""
-    return int(hhmm[:2]) * 60 + int(hhmm[3:])
 
 
 class Action(Enum):

@@ -59,6 +59,7 @@ class LiveTrader:
         self, symbol, feed, broker, state, notifier, session,
         timeframe: str = "15m", seed_days: int = 4, poll_buffer_s: int = 20,
         heartbeat_hours: float = 1.0, max_frame_bars: int = 500,
+        flatten_time: str = "15:45",
     ) -> None:
         self._symbol = symbol
         self._feed = feed
@@ -68,6 +69,7 @@ class LiveTrader:
         self._session = session
         self._timeframe = timeframe
         self._interval_min = timeframe_minutes(timeframe)  # poll cadence == bar size
+        self._flatten_time = flatten_time  # ET wall-clock the position must be flat by
         self._seed_days = seed_days
         self._poll_buffer_s = poll_buffer_s
         self._heartbeat_hours = heartbeat_hours
@@ -191,6 +193,47 @@ class LiveTrader:
         self._notifier.notify("close", f"{self._symbol} {reason} pnl={pnl:.2f}")
         self._entry = None
 
+    # --- startup reconciliation ------------------------------------------
+    def reconcile_open_position(self, now: dt.datetime | None = None) -> None:
+        """Rebuild position tracking on restart; force-flatten an overdue carry.
+
+        A fresh process loses the in-memory ``_entry``. We rebuild it from the
+        durable signal log so reconciliation/exit keep working across a restart.
+        And we enforce the flat-by-close invariant *defensively*: if the broker
+        still holds a position past the ``flatten_time`` of the day it was opened
+        (e.g. the bot slept through the 15:45 exit and it carried overnight), we
+        cancel the (possibly expired) stop and close it now, instead of holding
+        it for another whole session.
+        """
+        pos = self._broker.get_position(self._symbol)
+        if pos is None:
+            return
+        now = now or dt.datetime.now(_UTC)
+        sig = self._state.last_signal(self._symbol)
+        if sig is not None:
+            self._entry = {
+                "direction": sig["direction"], "qty": sig["qty"],
+                "entry_price": sig["entry"], "entry_ts": pd.Timestamp(sig["ts"]),
+                "stop": sig["stop"], "target": sig["target"],
+            }
+            et_date = sig["et_date"]
+        else:  # holding but no record of it — rebuild minimal tracking from the broker
+            self._entry = {
+                "direction": pos.side, "qty": pos.qty, "entry_price": pos.avg_entry_price,
+                "entry_ts": pd.Timestamp(now), "stop": 0.0, "target": None,
+            }
+            et_date = pd.Timestamp(now).tz_convert(_ET).date().isoformat()
+
+        must_flat_by = pd.Timestamp(f"{et_date} {self._flatten_time}", tz=_ET)
+        if pd.Timestamp(now).tz_convert(_ET) >= must_flat_by:
+            log.warning("reconcile: %s position overdue (opened %s) — force-flattening", self._symbol, et_date)
+            self._broker.cancel_orders(self._symbol)
+            self._broker.close_position(self._symbol)
+            price = float(self._frame["close"].iloc[-1]) if self._frame is not None and not self._frame.empty \
+                else float(self._entry["entry_price"])
+            self._record_close(price, pd.Timestamp(now), reason="stale-flatten")
+            self._notifier.notify("recover", f"{self._symbol} force-flattened a stale carried position")
+
     # --- live I/O (validated by manual dry-run, not unit tests) -----------
     def seed(self) -> None:
         """Fetch recent history and warm the session's opening-range state."""
@@ -207,6 +250,8 @@ class LiveTrader:
         for k in range(1, len(self._frame) + 1):  # replay to rebuild today's OR / traded flag
             self._session.on_bar(self._frame.iloc[:k], equity, has_pos)
         self._last_ts = self._frame.index[-1]
+        # Defensive flat-by-close: recover tracking and clear any overdue carry.
+        self.reconcile_open_position()
         log.info("seeded %d %s bars through %s", len(self._frame), self._symbol, self._last_ts)
 
     def poll_once(self) -> None:

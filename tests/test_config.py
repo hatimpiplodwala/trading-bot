@@ -11,8 +11,7 @@ def test_settings_load():
     settings = load_settings()
     assert settings["symbol"] == "SPY"
     assert settings["risk"]["risk_per_trade"] == 0.005
-    # A sane threshold (tune-proof: the exact value moves across backtest cycles).
-    assert 0 < settings["signal"]["min_confluence_score"] <= 100
+    assert settings["orb"]["stop_atr_floor_mult"] == 0.5
 
 
 def test_env_loader_runs(tmp_path, monkeypatch):

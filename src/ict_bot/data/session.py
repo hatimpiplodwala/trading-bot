@@ -12,11 +12,9 @@ from __future__ import annotations
 
 import pandas as pd
 
+from ict_bot.config import hhmm_to_min
+
 _ET = "America/New_York"
-
-
-def _to_min(hhmm: str) -> int:
-    return int(hhmm[:2]) * 60 + int(hhmm[3:])
 
 
 def regular_hours(df: pd.DataFrame, start: str = "09:30", end: str = "16:00") -> pd.DataFrame:
@@ -25,4 +23,4 @@ def regular_hours(df: pd.DataFrame, start: str = "09:30", end: str = "16:00") ->
         return df
     et = df.index.tz_convert(_ET)
     et_min = et.hour * 60 + et.minute
-    return df[(et_min >= _to_min(start)) & (et_min < _to_min(end))]
+    return df[(et_min >= hhmm_to_min(start)) & (et_min < hhmm_to_min(end))]

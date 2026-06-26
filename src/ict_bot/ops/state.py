@@ -61,6 +61,13 @@ class StateStore:
         ).fetchone()
         return row is not None
 
+    def last_signal(self, symbol: str) -> dict | None:
+        """The most recent recorded signal for ``symbol`` (to rebuild tracking on restart)."""
+        row = self._conn.execute(
+            "SELECT * FROM signals WHERE symbol=? ORDER BY rowid DESC LIMIT 1", (symbol,)
+        ).fetchone()
+        return dict(row) if row is not None else None
+
     def record_trade(
         self, *, symbol: str, entry_ts: str, exit_ts: str, direction: str,
         entry_price: float, exit_price: float, qty: int, pnl: float,

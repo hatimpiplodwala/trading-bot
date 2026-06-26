@@ -1,7 +1,7 @@
 [project]
 name = "ict-bot"
 version = "0.1.0"
-description = "ICT methodology paper-trading bot for SPY on Alpaca (paper), with a local LLM journal layer."
+description = "Opening Range Breakout paper-trading bot for SPY on Alpaca (paper)."
 readme = "README.md"
 authors = [
     { name = "Hatim Piplodwala", email = "hpiplodwala110@gmail.com" }
@@ -12,13 +12,11 @@ dependencies = [
     "backtesting>=0.6.5",
     "duckdb>=1.5.3",
     "httpx>=0.28.1",
-    "ollama>=0.6.2",
     "pandas>=3.0.3",
     "pandas-ta-classic>=0.6.20",
     "pyarrow>=24.0.0",
     "python-dotenv>=1.2.2",
     "pyyaml>=6.0.3",
-    "smartmoneyconcepts>=0.0.27",
 ]
 
 [project.scripts]

@@ -54,6 +54,7 @@ def build_trader(settings: dict, *, dry_run: bool) -> LiveTrader:
         poll_buffer_s=live_cfg.get("poll_buffer_seconds", 20),
         heartbeat_hours=settings.get("alerts", {}).get("heartbeat_hours", 1),
         max_frame_bars=settings.get("service", {}).get("max_frame_bars", 500),
+        flatten_time=settings["exits"]["flatten_time"],
     )
 
 

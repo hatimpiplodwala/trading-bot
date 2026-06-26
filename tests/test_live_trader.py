@@ -239,6 +239,46 @@ def test_flatten_cancels_resting_stop_before_closing():
     assert cancel["symbol"] == "SPY"
 
 
+def test_reconcile_force_flattens_stale_overnight_position():
+    # A position entered yesterday that the bot never flattened (it slept through
+    # the 15:45 exit) must be force-closed on the next startup - not held for days.
+    broker, state, session = DryRunBroker(100_000.0, True), StateStore(":memory:"), _session()
+    state.record_signal(ts="2026-06-22T14:30:00+00:00", et_date=dt.date(2026, 6, 22),
+                        symbol="SPY", direction="short", entry=745.96, stop=749.84,
+                        target=None, qty=6, order_id="x")
+    broker.submit_entry_with_stop("SPY", "short", 6, 749.84)  # broker still holds it
+    trader = LiveTrader("SPY", None, broker, state, _Rec(), session, flatten_time="15:45")
+    trader._frame = _frame(_day("2026-06-22"))                # gives a close for the exit proxy
+
+    now = dt.datetime(2026, 6, 23, 13, 35, tzinfo=dt.timezone.utc)  # 09:35 ET, NEXT day
+    trader.reconcile_open_position(now)
+
+    assert broker.get_position("SPY") is None                 # force-flattened
+    kinds = [o["kind"] for o in broker.orders]
+    assert "cancel" in kinds and kinds[-1] == "close"         # cancelled stale stop, then closed
+    assert len(state.trades()) == 1                           # recorded the close
+    assert trader._entry is None
+
+
+def test_reconcile_keeps_same_day_position_before_flatten():
+    # A legit mid-session restart must NOT close the live position - just rebuild
+    # tracking so reconciliation/exit still work.
+    broker, state, session = DryRunBroker(100_000.0, True), StateStore(":memory:"), _session()
+    state.record_signal(ts="2026-06-23T14:30:00+00:00", et_date=dt.date(2026, 6, 23),
+                        symbol="SPY", direction="short", entry=745.96, stop=749.84,
+                        target=None, qty=6, order_id="x")
+    broker.submit_entry_with_stop("SPY", "short", 6, 749.84)
+    trader = LiveTrader("SPY", None, broker, state, _Rec(), session, flatten_time="15:45")
+    trader._frame = _frame(_day("2026-06-23"))
+
+    now = dt.datetime(2026, 6, 23, 15, 0, tzinfo=dt.timezone.utc)  # 11:00 ET, before 15:45
+    trader.reconcile_open_position(now)
+
+    assert broker.get_position("SPY") is not None             # kept
+    assert trader._entry is not None and trader._entry["direction"] == "short"  # tracking restored
+    assert all(o["kind"] != "close" for o in broker.orders)
+
+
 def test_reconcile_records_stop_out_when_position_vanishes():
     broker, state, session = DryRunBroker(100_000.0, True), StateStore(":memory:"), _session()
     trader = _trader(broker, state, session)

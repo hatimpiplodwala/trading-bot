@@ -1,7 +1,7 @@
 """Opening Range Breakout backtest harness (momentum strategy).
 
-A parallel runner to :mod:`ict_bot.backtest.runner`, driving the ORB signal
-(:mod:`ict_bot.strategy.orb`) bar-by-bar through backtesting.py. Single series,
+Drives the ORB signal (:mod:`ict_bot.strategy.orb`) bar-by-bar through
+backtesting.py. Single series,
 one trade per day, flat by the close — no HTF/reference frames needed. Reuses the
 shared pieces: canonical->backtesting frame, slippage spread, risk sizing, and
 the daily loss limit.
@@ -13,7 +13,7 @@ import pandas as pd
 from backtesting import Backtest, Strategy
 
 from ict_bot.backtest.metrics import to_backtesting_frame
-from ict_bot.backtest.runner import _hhmm_to_minutes
+from ict_bot.config import hhmm_to_min as _hhmm_to_minutes
 from ict_bot.data.session import regular_hours
 from ict_bot.strategy.orb import opening_range, orb_breakout, orb_stop, orb_target
 from ict_bot.strategy.risk import DailyLossLimit, compute_atr, position_size
