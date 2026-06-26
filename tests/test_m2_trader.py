@@ -96,3 +96,17 @@ def test_flatten_all_closes_every_leg():
     t.flatten_all()
     assert broker.get_position("SPY") is None
     assert broker.get_position("QQQ") is None
+
+
+def test_build_trader_selects_by_strategy_key(monkeypatch):
+    from ict_bot.main import build_trader
+    from ict_bot.config import load_settings
+    from ict_bot.ops.live_trader import LiveTrader
+
+    monkeypatch.setenv("ALPACA_API_KEY", "k")
+    monkeypatch.setenv("ALPACA_SECRET", "s")
+    settings = load_settings()
+    settings["strategy"] = "m2"
+    assert isinstance(build_trader(settings, dry_run=True), M2Trader)
+    settings["strategy"] = "orb"
+    assert isinstance(build_trader(settings, dry_run=True), LiveTrader)

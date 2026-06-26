@@ -21,11 +21,13 @@ from ict_bot.data.feed import AlpacaFeed
 from ict_bot.ops.alerts import LogNotifier
 from ict_bot.ops.live_trader import LiveTrader
 from ict_bot.ops.logging_conf import configure_logging
+from ict_bot.ops.m2_trader import M2Trader
 from ict_bot.ops.state import StateStore
 from ict_bot.strategy.orb_session import ORBSession
+from ict_bot.strategy.rsi2_session import RSI2Session
 
 
-def build_trader(settings: dict, *, dry_run: bool) -> LiveTrader:
+def build_trader(settings: dict, *, dry_run: bool) -> LiveTrader | M2Trader:
     """Assemble the live trader from settings + environment (Alpaca paper)."""
     load_env()
     api_key, secret = require_env("ALPACA_API_KEY"), require_env("ALPACA_SECRET")
@@ -45,6 +47,17 @@ def build_trader(settings: dict, *, dry_run: bool) -> LiveTrader:
     db_path = REPO_ROOT / broker_cfg.get("state_db", "data/state.db")
     db_path.parent.mkdir(parents=True, exist_ok=True)
     state = StateStore(str(db_path))
+
+    if settings.get("strategy", "orb") == "m2":
+        m2 = settings["m2"]
+        return M2Trader(
+            m2["symbols"], feed, broker, state, LogNotifier(),
+            RSI2Session.from_settings(settings),
+            seed_days=m2.get("seed_days", 400),
+            poll_buffer_s=live_cfg.get("poll_buffer_seconds", 20),
+            heartbeat_hours=settings.get("alerts", {}).get("heartbeat_hours", 1),
+            decision_after=m2["decision_after"], stop_pct=m2["stop_pct"],
+        )
 
     return LiveTrader(
         settings["symbol"], feed, broker, state, LogNotifier(),
@@ -78,6 +91,9 @@ def main() -> None:
                         help="log intended orders; never submit to the broker")
     parser.add_argument("--once", action="store_true",
                         help="seed + a single poll, then exit (smoke test)")
+    parser.add_argument("--flatten", action="store_true",
+                        help="close all positions for the active strategy and exit "
+                             "(use before switching M2 -> ORB)")
     args = parser.parse_args()
 
     settings = load_settings()
@@ -89,7 +105,10 @@ def main() -> None:
     configure_logging(logfile=logfile)
 
     trader = build_trader(settings, dry_run=args.dry_run)
-    if args.once:
+    if args.flatten:
+        trader.seed()
+        trader.flatten_all()
+    elif args.once:
         trader.seed()
         trader.poll_once()
     else:

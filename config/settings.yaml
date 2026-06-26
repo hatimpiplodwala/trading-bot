@@ -14,6 +14,19 @@ smt_reference_symbols: [QQQ, IWM]
 timeframes: [5m, 15m, 1h, 4h, 1d]
 entry_timeframe: 15m
 
+strategy: orb            # orb | m2 — which strategy the live service runs
+
+# M2: RSI-2 mean-reversion basket (see backtest/strategy_research.md). A daily
+# strategy — decides once near the close and holds overnight behind a wide stop.
+m2:
+  symbols: [SPY, QQQ, IWM]
+  entry_t: 10
+  exit_t: 60
+  trend_len: 200
+  exit_sma_len: 5
+  stop_pct: 0.10         # wide catastrophe stop (verified vs backtest — never fired OOS)
+  decision_after: "15:45"   # ET — act once at/after this time, hold overnight
+
 data:
   feed: iex            # free Alpaca tier (Gotcha #5 — validate before trusting)
   history_years: 2

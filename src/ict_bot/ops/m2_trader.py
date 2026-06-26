@@ -141,6 +141,17 @@ class M2Trader:
                                      qty=e["qty"], pnl=pnl)
             self._notifier.notify("close", f"{symbol} {reason} pnl={pnl:.2f}")
 
+    def poll_once(self) -> None:
+        """One pass for ``--once``/dry-run: log each leg's decision; act only in-window."""
+        for sym in self._symbols:
+            frame = self._frames.get(sym)
+            if frame is None or frame.empty:
+                continue
+            has_pos = self._broker.get_position(sym) is not None
+            action = self._session.decide(frame["close"], has_pos)
+            self._notifier.notify("decision", f"{sym}: {action.name}")
+        self.decide_and_act()
+
     def flatten_all(self) -> None:
         """Close every basket leg (+ cancel its stop). Used by the M2->ORB switch."""
         now = dt.datetime.now(_UTC)

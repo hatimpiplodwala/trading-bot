@@ -86,6 +86,12 @@ class LiveTrader:
         """Ask the run loop to finish the current poll and exit (signal-safe)."""
         self._stopped = True
 
+    def flatten_all(self) -> None:
+        """Cancel orders and close this symbol's position (for ``--flatten``)."""
+        self._broker.cancel_orders(self._symbol)
+        if self._broker.get_position(self._symbol) is not None:
+            self._broker.close_position(self._symbol)
+
     def _heartbeat_due(self, now: dt.datetime) -> bool:
         if self._heartbeat_hours <= 0 or self._last_heartbeat is None:
             return False
