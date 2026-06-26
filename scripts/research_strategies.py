@@ -121,33 +121,41 @@ def overnight_return(daily: pd.DataFrame) -> pd.Series:
 
 
 def rsi2_returns(d: pd.DataFrame, entry_t: float, fill: str = "close",
-                 slip_bps: float = 0.0) -> tuple[pd.Series, pd.Series]:
+                 slip_bps: float = 0.0, stop_pct: float = 0.0) -> tuple[pd.Series, pd.Series]:
     """Event-driven RSI-2 daily returns under a realistic fill model.
 
     ``close``    — act at the signal bar's close (≈ market-on-close order).
     ``next_open`` — act at the OPEN of the day after the signal (pessimistic; the
                     overnight bounce after an oversold close is given up on entry).
     ``slip_bps`` charges a per-side cost on the entry and exit days.
+    ``stop_pct`` (close-fill only) adds a hard catastrophe stop: while holding, if
+                 the day's low breaches ``entry*(1-stop_pct)`` we exit at the stop.
     Returns (daily strat return, in-market flag), both aligned to the realized day.
     """
     close, open_ = d["close"], d["open"]
     r2, sma200, sma5 = rsi(close, 2), close.rolling(200).mean(), close.rolling(5).mean()
     enter = ((r2 < entry_t) & (close > sma200)).to_numpy()
     leave = ((r2 > 60) | (close > sma5)).to_numpy()
-    c, o, n = close.to_numpy(), open_.to_numpy(), len(close)
+    c, o, low, n = close.to_numpy(), open_.to_numpy(), d["low"].to_numpy(), len(close)
     slip = slip_bps / 1e4
     ret, active = np.zeros(n), np.zeros(n)
-    holding = False
+    holding, entry_px = False, 0.0
     for t in range(1, n):
         if fill == "close":
             if holding:
                 ret[t] = c[t] / c[t - 1] - 1.0
                 active[t] = 1.0
+                if stop_pct > 0 and low[t] <= entry_px * (1 - stop_pct):
+                    stop_px = entry_px * (1 - stop_pct)  # catastrophe stop hit intraday
+                    ret[t] = stop_px / c[t - 1] - 1.0 - slip
+                    holding = False
+                    continue  # no same-bar re-entry into a falling knife
             if holding and leave[t]:
                 holding = False
                 ret[t] -= slip
             elif (not holding) and enter[t]:
                 holding = True
+                entry_px = c[t]
                 ret[t] -= slip
         else:  # next_open
             if holding and leave[t - 1]:        # signalled at close[t-1] -> exit open[t]
@@ -283,6 +291,16 @@ def validate_fills(daily: dict, entry_t: int, oos_months: int) -> None:
     cells = "  ".join(f"{y}:Sh{m['sharpe']:+.2f}/PF{m['profit_factor']:.2f}"
                       for y, m in py.items())
     print(f"Worst-case (next_open + 5bps) basket per-year:\n  {cells}")
+
+    print("\nCatastrophe-stop sweep (basket, close fills) — must stay PASS:")
+    for sp in (0.0, 0.08, 0.10, 0.12):
+        srs, acs = zip(*(rsi2_returns(daily[s], entry_t, "close", 0.0, sp) for s in legs))
+        br = pd.concat(srs, axis=1).mean(axis=1)
+        ba = (pd.concat(acs, axis=1).sum(axis=1) > 0).astype(float)
+        _, om2 = evaluate_series(br, ba, spy, oos_months)
+        print(f"  stop {sp * 100:>4.0f}%  OOS Sharpe {om2['sharpe']:+.2f}  "
+              f"PF {om2['profit_factor']:.2f}  DD {om2['max_drawdown_pct']:.1f}%  "
+              f"{'PASS' if oos_passes(om2) else 'fail'}")
 
 
 def main() -> None:
