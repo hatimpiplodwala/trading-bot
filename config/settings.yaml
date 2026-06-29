@@ -14,7 +14,7 @@ smt_reference_symbols: [QQQ, IWM]
 timeframes: [5m, 15m, 1h, 4h, 1d]
 entry_timeframe: 15m
 
-strategy: orb            # orb | m2 — which strategy the live service runs
+strategy: m2             # orb | m2 — which strategy the live service runs
 
 # M2: RSI-2 mean-reversion basket (see backtest/strategy_research.md). A daily
 # strategy — decides once near the close and holds overnight behind a wide stop.
