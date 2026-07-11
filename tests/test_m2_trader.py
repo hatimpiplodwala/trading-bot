@@ -98,6 +98,26 @@ def test_flatten_all_closes_every_leg():
     assert broker.get_position("QQQ") is None
 
 
+def test_loop_seeds_only_in_decision_window():
+    # Before the decision window the loop must NOT hit the data API. M2 acts once/day,
+    # so seeding every 15m was ~26x the bar fetches (and 26x the DNS-failure exposure).
+    frames = {"SPY": _daily(_oversold_uptrend())}
+    calls = {"n": 0}
+
+    class CountingFeed(FakeFeed):
+        def get_historical_bars(self, *a, **k):
+            calls["n"] += 1
+            return super().get_historical_bars(*a, **k)
+
+    session = RSI2Session(entry_t=10, exit_t=60, trend_len=200, exit_sma_len=5)
+    t = M2Trader(list(frames), CountingFeed(frames), DryRunBroker(equity=9000.0),
+                 StateStore(":memory:"), LogNotifier(), session,
+                 decision_after="15:45", stop_pct=0.10)
+    before = pd.Timestamp("2024-09-09 17:00", tz="UTC")  # 13:00 ET, pre-window
+    t.run(max_iterations=1, sleep_fn=lambda *_: None, now_fn=lambda: before)
+    assert calls["n"] == len(frames)  # startup seed only; no re-seed before the window
+
+
 def test_build_trader_selects_by_strategy_key(monkeypatch):
     from ict_bot.main import build_trader
     from ict_bot.config import load_settings

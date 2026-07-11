@@ -201,8 +201,12 @@ class M2Trader:
                 tick = now_fn()
                 if self._heartbeat_due(tick):
                     self._emit_heartbeat()
-                if self._broker.is_market_open():
-                    self.seed()  # refresh daily frames
+                # Only hit the data API when a decision is actually due. M2 acts once
+                # per day at decision_after, so seeding every 15m was ~26x the bar
+                # fetches (and 26x the DNS-failure exposure). _in_window is a local
+                # time check, so this also skips the is_market_open() round-trip off-window.
+                if self._in_window(tick) and self._broker.is_market_open():
+                    self.seed()  # refresh daily frames only when about to decide
                     self.decide_and_act(tick)
             except Exception as exc:  # never let one bad cycle kill the loop
                 log.exception("M2 cycle failed")
